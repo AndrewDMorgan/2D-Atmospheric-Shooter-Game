@@ -39,6 +39,7 @@ class DropTypes (Enum):
     Weapon = 0
     Amo = 1
     Part = 2
+    Armor = 3
 
 
 # =============================================================================
@@ -63,15 +64,17 @@ class RadialLight:
     
     # rendering the radial light
     def Render(self, lightMap: pygame.Surface, pos: tuple) -> None:
+        transPos = [pos[0] - cameraPos[0] + screenSize[0]//2, pos[1] - cameraPos[1] + screenSize[1]//2]
         if not self.renderShadows:
-            lightMap.blit(self.surface, [pos[0] - self.radius, pos[1] - self.radius], special_flags=pygame.BLEND_ADD)
+            lightMap.blit(self.surface, [round(transPos[0] - self.radius), round(transPos[1] - self.radius)], special_flags=pygame.BLEND_ADD)
             return
+        
         # rendering the light
         lightFeild = pygame.Surface([self.radius*2, self.radius*2])
         lightFeild.blit(self.surface, [0, 0])
         for obj in solidObjects:
-            obj.RenderShadow(lightFeild, [round(pos[0] + cameraPos[0] - screenSize[0]//2), round(pos[1] + cameraPos[1] - screenSize[1]//2)], self.radius)
-        lightMap.blit(lightFeild, [pos[0] - self.radius, pos[1] - self.radius], special_flags=pygame.BLEND_ADD)
+            obj.RenderShadow(lightFeild, pos, self.radius)
+        lightMap.blit(lightFeild, [round(transPos[0] - self.radius), round(transPos[1] - self.radius)], special_flags=pygame.BLEND_ADD)
 
 
 # a light with a fixed position
@@ -80,26 +83,31 @@ class Light (RadialLight):
         super().__init__(radius, color, step, renderShadows=renderShadows)
         self.pos = pos
     def Render(self, lightMap: pygame.Surface) -> None:
-        super().Render(lightMap, [self.pos[0] - cameraPos[0] + screenSize[0]//2, self.pos[1] - cameraPos[1] + screenSize[1]//2])
+        super().Render(lightMap, self.pos)
 
 
 # a solid object that casts shadows
 class ShadowedObject:
-    def __init__(self, pos: tuple, size: tuple, sprite: pygame.Surface=None, renderShadows: bool=True, renderObject: bool=True) -> None:
+    def __init__(self, pos: tuple, size: tuple, sprite: pygame.Surface=None, renderShadows: bool=True, renderObject: bool=True, collideable: bool=True) -> None:
         self.pos = pos
         self.size = size
 
         self.renderShadows = renderShadows
         self.renderObject = renderObject
+        self.collideable = collideable
 
         self.sprite = sprite
         if not self.sprite:
             self.sprite = pygame.Surface(self.size)
             self.sprite.fill((0, 225, 0))
+        
+        # getting the length from center to the outside of the object
+        self.totalLength = (self.size[0]//2)**2 + (self.size[1]//2)**2
+        self.centerPosition = [self.pos[0] + self.size[0]//2, self.pos[1] + self.size[1]//2]
     
     # checks collision wiht a given point
     def CheckCollision(self, point: tuple) -> bool:
-        return point[0] >= self.pos[0] and point[0] <= self.pos[0] + self.size[0] and point[1] >= self.pos[1] and point[1] <= self.pos[1] + self.size[1]
+        return self.collideable and point[0] >= self.pos[0] and point[0] <= self.pos[0] + self.size[0] and point[1] >= self.pos[1] and point[1] <= self.pos[1] + self.size[1]
 
     # rendering the object
     def Render(self, screen: pygame.Surface) -> None:
@@ -113,58 +121,59 @@ class ShadowedObject:
         if not self.renderShadows: return  # in case the object doesn't render shadows and is just being used as a hit box
         
         # checking if the light is within range
-        dif = [self.pos[0] - position[0], self.pos[1] - position[1]]
-        if dif[0]**2 + dif[1]**2 > radius**2:
+        dif = [self.centerPosition[0] - position[0], self.centerPosition[1] - position[1]]
+        if dif[0]**2 + dif[1]**2 > radius**2+self.totalLength:
             return
-
+        
         # getting the coners the shadow casts from
         difTL = [self.pos[0]-position[0], self.pos[1]-position[1]]
-        difBR = [self.pos[0]-position[0]+self.size[1], self.pos[1]-position[1]+self.size[1]]
+        difBR = [self.pos[0]-position[0]+self.size[0], self.pos[1]-position[1]+self.size[1]]
+
         points = []
-        leftRightCenter = difTL[0] < 0 and difBR[0] > 0
-        topBottomCenter = difTL[1] < 0 and difBR[1] > 0
+        leftRightCenter = difTL[0] < 0 and difBR[0] > 0  # player is to the right of the object
+        topBottomCenter = difTL[1] < 0 and difBR[1] > 0  # player is bellow object
         if leftRightCenter:
-            if difTL[1] > 0:
+            if difTL[1] >= 0:
                 # top
                 points.append([self.pos[0], self.pos[1]])
                 points.append([self.pos[0] + self.size[0], self.pos[1]])
             else:
                 # bottom
-                points.append([self.pos[0], self.pos[1] + self.size[1]])
-                points.append([self.pos[0] + self.size[0], self.pos[1] + self.size[1]])
+                points.append([self.pos[0], self.pos[1] + self.size[1]-1])
+                points.append([self.pos[0] + self.size[0], self.pos[1] + self.size[1]-1])
         elif topBottomCenter:
-            if difTL[0] > 0:
+            if difTL[0] >= 0:
                 # left
                 points.append([self.pos[0], self.pos[1]])
                 points.append([self.pos[0], self.pos[1] + self.size[1]])
             else:
                 # right
-                points.append([self.pos[0] + self.size[0], self.pos[1]])
-                points.append([self.pos[0] + self.size[0], self.pos[1] + self.size[1]])
+                points.append([self.pos[0] + self.size[0]-1, self.pos[1]])
+                points.append([self.pos[0] + self.size[0]-1, self.pos[1] + self.size[1]])
         else:
             # angle
-            if difTL[0] > 0:
-                if difTL[1] > 0:
+            if difTL[0] >= 0:
+                if difTL[1] >= 0:
                     # top left
                     points.append([self.pos[0], self.pos[1] + self.size[1]])
                     points.append([self.pos[0], self.pos[1]])
                     points.append([self.pos[0] + self.size[0], self.pos[1]])
                 else:
                     # bottom left
-                    points.append([self.pos[0] + self.size[0], self.pos[1] + self.size[1]])
-                    points.append([self.pos[0], self.pos[1] + self.size[1]])
+                    points.append([self.pos[0] + self.size[0], self.pos[1] + self.size[1]-1])
+                    points.append([self.pos[0], self.pos[1] + self.size[1]-1])
                     points.append([self.pos[0], self.pos[1]])
             else:
-                if difTL[1] > 0:
+                if difTL[1] >= 0:
                     # top right
                     points.append([self.pos[0], self.pos[1]])
-                    points.append([self.pos[0] + self.size[0], self.pos[1]])
-                    points.append([self.pos[0] + self.size[0], self.pos[1] + self.size[1]])
+                    points.append([self.pos[0] + self.size[0]-1, self.pos[1]])
+                    points.append([self.pos[0] + self.size[0]-1, self.pos[1] + self.size[1]])
                 else:
                     # bottom right
-                    points.append([self.pos[0], self.pos[1] + self.size[1]])
-                    points.append([self.pos[0] + self.size[0], self.pos[1] + self.size[1]])
-                    points.append([self.pos[0] + self.size[0], self.pos[1]])
+                    points.append([self.pos[0], self.pos[1] + self.size[1]-1])
+                    points.append([self.pos[0] + self.size[0]-1, self.pos[1] + self.size[1]-1])
+                    points.append([self.pos[0] + self.size[0]-1, self.pos[1]])
         
         # projecting the points
         surfSize = radius * 2
@@ -179,14 +188,14 @@ class ShadowedObject:
             ])
         
         points = points+projectedPoints
-        points = list(map(lambda p: [round(p[0] - position[0] + radius), round(p[1] - position[1] + radius)], points))
+        points = list(map(lambda p: [p[0] - position[0] + radius, p[1] - position[1] + radius], points))
         
         # rendering the polygon
         surf = pygame.Surface((surfSize, surfSize))
         surf.fill((255, 255, 255))
         surf.set_colorkey((255, 255, 255))
         pygame.draw.polygon(surf, (0, 0, 0), points)
-        pygame.draw.rect(surf, (255, 255, 255), [round(self.pos[0] - position[0] + radius), round(self.pos[1] - position[1] + radius), self.size[0], self.size[1]])
+        pygame.draw.rect(surf, (255, 255, 255), [self.pos[0] - position[0] + radius, self.pos[1] - position[1] + radius, self.size[0], self.size[1]])
         lightMap.blit(surf, [0, 0])
 
 
@@ -314,13 +323,14 @@ class Entity:
         return point[0] >= pos[0] and point[0] <= pos[0]+self.spriteSize[0] and point[1] >= pos[1] and point[1] <= pos[1]+self.spriteSize[1]
 
     # rendering the entity
-    def Render(self, screen: pygame.Surface, lightMap: pygame.Surface) -> None:
+    def Render(self, screen: pygame.Surface, lightMap: pygame.Surface, lightOffset: tuple=(0, 0)) -> None:
         # rendering the sprite
         translatedPosition = [self.position[0] - cameraPos[0] + screenSize[0]//2, self.position[1] - cameraPos[1] + screenSize[1]//2]
-        screen.blit(self.sprite, [round(translatedPosition[0]-self.sprite.get_width()//2), round(translatedPosition[1]-self.sprite.get_height()//2)])
+        width, height = self.sprite.get_size()
+        screen.blit(self.sprite, [round(translatedPosition[0]-width//2), round(translatedPosition[1]-height//2)])
 
         # rendering the light if there is one
-        if self.light: self.light.Render(lightMap, translatedPosition)
+        if self.light: self.light.Render(lightMap, [round(self.position[0]+lightOffset[0]), round(self.position[1]+lightOffset[1])])
 
 
 # a class for an enemy
@@ -344,7 +354,9 @@ class Enemy (Entity):
         
         self.drops = drops
         self.weapon = weapon
-        self.engagementDst = engagementDst
+        self.engagementDst = engagementDst**2
+
+        self.weapon.lastFired = time.time() - 0.1  # so they don't instantly fire upon spawning
 
     # gets the current animation state
     def GetAnimationState(self, *args) -> int:
@@ -363,12 +375,12 @@ class Enemy (Entity):
 
         # checking if the mob has a weapon
         if self.weapon:
-            # checking if the weapon should be fired
-            if time.time() - self.weapon.lastFired > abs(self.weapon.fireRate) and random.uniform(0, 1) < dt:
-                # now checking line of sight
-                travel = (player.position[0] - self.position[0], player.position[1] - self.position[1])
-                travelLength = math.sqrt(travel[0]**2 + travel[1]**2)
-                if travelLength < self.engagementDst:  # the engagement distance (may need to be fine tuned)
+            # now checking line of sight
+            travel = (player.position[0] - self.position[0], player.position[1] - self.position[1])
+            travelLength = travel[0]**2 + travel[1]**2  # using the magnitude with everything being squared to reduce square root operations
+            if travelLength < self.engagementDst:  # the engagement distance (may need to be fine tuned)
+                # checking if the weapon should be fired
+                if time.time() - self.weapon.lastFired > abs(self.weapon.fireRate) and random.uniform(0, 1) < dt:
                     for i in range(10):
                         pos = [self.position[0] + travel[0]*i*0.1, self.position[1] + travel[1]*i*0.1]
                         if TileMapCollision(pos): return
@@ -378,6 +390,8 @@ class Enemy (Entity):
                     projectiles = self.weapon.ForceFire(travel, self)
                     player.projectiles += projectiles
                     self.weapon.lastFired = time.time()
+            else:
+                self.weapon.lastFired = time.time() - max(abs(self.weapon.fireRate) - 0.25, 0.1)  # resetting the cooldown so that the mob doesn't instantly shoot upon seeing the player
         # don't put code after here (the method may exit after the weapon firing script)
 
     # called on kill of the mob
@@ -387,12 +401,14 @@ class Enemy (Entity):
             # drop type, name, amount range, chance (0-10)
             randomChance = random.uniform(0, 10)
             if drop[3] >= randomChance:
+                amount = random.randint(drop[2][0], drop[2][1])
+                if not amount: continue  # making sure to not create an item with 0 quantity
+                
                 # generating info for the dropped item
                 randomVelocity = [random.uniform(-5, 5), random.uniform(-5, 5)]
                 randVelLength = math.sqrt(randomVelocity[0]**2 + randomVelocity[1]**2)
                 randLength = random.uniform(75, 250)
                 randomVelocity = [randomVelocity[0]/randVelLength*randLength, randomVelocity[1]/randVelLength*randLength]
-                amount = random.randint(drop[2][0], drop[2][1])
 
                 # creating the dropped item
                 if drop[0] == DropTypes.Amo:  # dropping amo                    
@@ -453,7 +469,13 @@ class DroppedItem (Particle):
             if self.dropType == DropTypes.Amo:
                 player.amoInventory[self.dropName] += self.amount
             elif self.dropType == DropTypes.Part:
-                player.partInventory[self.dropName] += self.amount
+                player.AddPart(self.dropName, self.amount)
+                #player.partInventory[self.dropName] += self.amount
+            elif self.dropType == DropTypes.Weapon:
+                for i in range(self.amount): player.weaponInventory.append(playerWeapons[self.dropName].Copy())
+            elif self.outputType == DropTypes.Armor:
+                player.AddArmor(self.outputName)
+                #player.armorInventory.append(playerArmors[self.outputName])
 
 
 # a bullet class
@@ -544,6 +566,105 @@ class SparksParticle (Particle):
 #=============================================================================
 
 
+# cashes a render of an item slot (to improve preformance since drawing text is super slow)
+class ItemSlot:
+    def __init__(self, sprite: pygame.Surface, name: str, itemType: DropTypes, amount: int) -> None:
+        self.sprite = sprite
+        self.name = name
+        self.itemType = itemType
+        self.amount = amount
+        self.surface = pygame.Surface((56, 56))  # (self.sprite.get_size())
+        
+        self.highlighted = False  # for when an item is selected or equiped
+        
+        # generating an initial cash for the slot
+        self.UpdateCash(self.amount)
+    
+    # checks for a collision with the box
+    def CheckCollision(self, boxPosition: tuple, mousePosition: tuple):
+        relativePos = [mousePosition[0] - boxPosition[0], mousePosition[1] - boxPosition[1]]
+        return (relativePos[0] > 0 and relativePos[0] < 56) and (relativePos[1] > 0 and relativePos[1] < 56)
+
+    # creates a new cashed render
+    def UpdateCash(self, newAmount: int) -> None:
+        self.amount = newAmount  # updating the number field
+        
+        # clearing the surface
+        self.surface.fill((1, 1, 1))
+        self.surface.set_colorkey((1, 1, 1))
+
+        # getting the color
+        color = uiColorPallete.color
+        if self.highlighted:
+            # highlighting the slot (this is done when it's selected)
+            color = (color[0] * 1.35, color[1] * 1.35, color[2] * 1.35)
+
+        # rendering a new slot
+        pygame.draw.rect(self.surface, color, [2, 2, 52, 52], 0, 0)
+        pygame.draw.rect(self.surface, uiColorPallete.brightColor, [0, 0, 56, 56], 2, 2)
+        self.surface.blit(self.sprite, [4, 4])
+        UI.DrawText(self.surface, 15, "pixel2.ttf", f"{self.amount}", (5, 37), uiColorPallete.textColor)
+    
+    # renders the surface
+    def Render(self, screen: pygame.Surface, position: tuple) -> None:
+        screen.blit(self.surface, position)
+
+
+# stores a crafting recipe
+class CraftingRecipe:
+    def __init__(self, ingredients: list, outputType: DropTypes, outputName: any, amount: int, sprite: pygame.Surface) -> None:
+        self.ingredients = ingredients
+        self.outputType = outputType
+        self.outputName = outputName
+        self.amount = amount
+        self.sprite = sprite
+
+        # pre generate the crafting inventory tile
+        self.surface = pygame.Surface((56, 56))
+        self.CashRender()
+    
+    # checks for a collision with the box
+    def CheckCollision(self, boxPosition: tuple, mousePosition: tuple):
+        relativePos = [mousePosition[0] - boxPosition[0], mousePosition[1] - boxPosition[1]]
+        return (relativePos[0] > 0 and relativePos[0] < 56) and (relativePos[1] > 0 and relativePos[1] < 56)
+
+    # chases the render for the item slot
+    def CashRender(self) -> None:
+        # clearing the surface
+        self.surface.fill((1, 1, 1))
+        self.surface.set_colorkey((1, 1, 1))
+
+        # rendering a new slot
+        pygame.draw.rect(self.surface, uiColorPallete.color, [2, 2, 52, 52], 0, 0)
+        pygame.draw.rect(self.surface, uiColorPallete.brightColor, [0, 0, 56, 56], 2, 2)
+        self.surface.blit(self.sprite, [4, 4])
+        UI.DrawText(self.surface, 15, "pixel2.ttf", f"{self.amount}", (5, 37), uiColorPallete.textColor)
+
+    # checks for ingredients
+    def CheckIngredients(self, player: object) -> bool:
+        # checking that the player has enough of every ingredient
+        for ingredient, amount in self.ingredients:
+            if player.partInventory[ingredient] < amount: return False
+        return True
+    
+    # crafts the item
+    def Craft(self, player: object) -> None:
+        # removing the ingredients from the player
+        for ingredient, amount in self.ingredients:
+            player.RemovePart(ingredient, amount)
+        
+        # adding the crafted item
+        if self.outputType == DropTypes.Amo:
+            player.amoInventory[self.outputName] += self.amount
+        elif self.outputType == DropTypes.Part:
+            player.AddPart(self.outputName, self.amount)
+        elif self.outputType == DropTypes.Weapon:
+            for i in range(self.amount): player.weaponInventory.append(playerWeapons[self.outputName].Copy())
+        elif self.outputType == DropTypes.Armor:
+            player.AddArmor(self.outputName)
+            #player.armorInventory.append(playerArmors[self.outputName])
+
+
 # the player entity
 class Player (Entity):
     def __init__(self, sprites: pygame.Surface, light: object) -> None:
@@ -562,7 +683,8 @@ class Player (Entity):
         # stats about the player
         self.stats = {
             "dashCooldown": 5.5,
-            "speed": 100
+            "speed": 100,
+            "reach": 100**2,  # idk if this will be a changeable stat, the squaring is so magnitudes can be compared instead of distances to save a square root operation
         }
         
         # movement stuff
@@ -577,22 +699,20 @@ class Player (Entity):
         self.projectiles = []
         self.deadProjectiles = []
 
-        # the weapon the player is holding
-        # "AR-15"
-        # "Glock-19"
-        # "50-BMG"
-        # "Remington-570"
-        # "MP-5"
         self.exp = 0
 
         self.weaponSlot = 0
-        self.weaponInventory = [playerWeapons["AR-15"], playerWeapons["Glock-19"], playerWeapons["50-BMG"], playerWeapons["Remington-570"], playerWeapons["MP-5"]]
+        self.weaponInventory = [playerWeapons["Pipe Pistol"].Copy()]#[playerWeapons["Pipe Pistol"], playerWeapons["Pipe Shotty"], playerWeapons["SAR"]]
         self.amoInventory = {
             AmoType.Pistol: 35,
             AmoType.LargeRifle: 11,
             AmoType.Shotgun: 42,
-            AmoType.Rifle: 125 + 19302
+            AmoType.Rifle: 125
         }
+
+        # all the armor the player has in their inventory
+        self.armorInventory = []
+        self.selectedArmor = -1
 
         # all the parts the player has
         self.partInventory = {
@@ -609,30 +729,105 @@ class Player (Entity):
             "Jerry Can": 0,
             "Oil Can": 0,
             "Fire Powder": 0,
+            "Spring": 0
         }
+        self.inventorySlots = []  # for all the cashed slots (cashed for preformance)
         self.openInventory = False
+        self.selectedRecipe = -1  # the recipe currently selected
+
+        self.inCraftingBenchT1 = False
+        self.leftPadding = 0  # padding for the position of the players inventory
+        self.rightPadding = 0  # padding for the position of the players inventory
+        self.craftButton = UI.Button((235, 235), (80, 30), uiColorPallete, "Craft", textSize=20, font="pixel2.ttf", transparentColor=(254, 254, 254))
+
+    # adds a new piece of armor to the players inventory
+    def AddArmor(self, name: str) -> None:
+        # finding if the player already has it in their inventory
+        for armor in self.armorInventory:
+            if armor.name == name:
+                armor.UpdateCash(armor.amount + 1)
+                return  # ending early so it doesn't dupe a new copy
+        
+        self.armorInventory.append(ItemSlot(playerArmors[name].itemSprite, name, DropTypes.Armor, 1))  # adding a new item for it
+
+    # adds a new part
+    def AddPart(self, partName: str, amount: int) -> None:
+        if self.partInventory[partName]:  # adding to an already existing part
+            self.partInventory[partName] += amount
+            for slot in self.inventorySlots:
+                if slot.name == partName: slot.UpdateCash(self.partInventory[partName])
+        else:  # adding a new slot for a new item
+            self.partInventory[partName] = amount
+            self.inventorySlots.append(ItemSlot(partDropSpritesDoubleScale[partNames.index(partName)], partName, DropTypes.Part, amount))
     
+    # removes a part
+    def RemovePart(self, partName: str, amount: int) -> None:
+        self.partInventory[partName] -= amount
+        if self.partInventory[partName]:  # updating the cash
+            for slot in self.inventorySlots:
+                if slot.name == partName: slot.UpdateCash(self.partInventory[partName])
+        else:  # removing the slot as nothing is left
+            valid = []
+            for slot in self.inventorySlots:
+                if slot.name != partName: valid.append(slot)
+            self.inventorySlots = valid
+
     # renders the ui (mainly the inventory)
     def RenderUI(self, screen: pygame.Surface) -> None:
         if self.openInventory:
             # cell is 24x24 2 padding each side, 2 wide boarder, 5 separation
-            width = screenSize[0] - 120  # 60 padding on each side
-            cellSize = 24*2 + 2+2 + 2+2 + 5  # 37 i think
+            width = screenSize[0] - 120 - self.leftPadding - self.rightPadding  # 60 padding on each side
+            cellSize = 24*2 + 2+2 + 2+2 + 5  # 56 i think
             cells = width // cellSize
 
             # rendering the inventory
             i = 0
-            for key in self.partInventory:
-                count = self.partInventory[key]
-                if count:
-                    x = (i%cells) * cellSize + 60
-                    y = (i//cells) * cellSize + 60
-                    pygame.draw.rect(screen, (125, 125, 125), [x+2, y+2, 52, 52], 0, 0)
-                    pygame.draw.rect(screen, (255, 255, 255), [x, y, 56, 56], 2, 2)
-                    screen.blit(partDropSpritesDoubleScale[partNames.index(key)], [x+4, y+4])
-                    UI.DrawText(screen, 15, "pixel2.ttf", f"{count}", (x + 5, y + 37), (255, 255, 255))
+            for slot in self.inventorySlots+self.armorInventory:
+                x = (i%cells) * cellSize + 60 + self.leftPadding
+                y = (i//cells) * cellSize + 60
+                slot.Render(screen, [x, y])
+                i += 1
+            
+            # rendering the crafting menu
+            if self.inCraftingBenchT1:
+                i = 0
+                numCells = 4#265//cellSize#240 // cellSize
+                offset = (265 - numCells*cellSize)*0.5
+                for recipe in craftingRecipesTier1:
+                    # rendering the item slot
+                    x = (i%numCells) * cellSize + 60 + offset
+                    y = (i//numCells) * cellSize + 60+250
+                    screen.blit(recipe.surface, (x, y))
                     i += 1
+                
+                # rendering the recipe window
+                pygame.draw.rect(screen, uiColorPallete.color, [62, 62, 261, 211])
+                pygame.draw.rect(screen, uiColorPallete.brightColor, [60, 60, 265, 215], 2, 4)  # 25 less padding on inventory side than screen edge
 
+                # rendering the selected recipe
+                if self.selectedRecipe >= 0:
+                    # drawing the ingredients
+                    i = 0
+                    for ingredient, amount in craftingRecipesTier1[self.selectedRecipe].ingredients:
+                        UI.DrawText(screen, 20, "pixel2.ttf", f"{amount}x {ingredient}", (65, 65 + i*25), uiColorPallete.textColor)
+                        i += 1
+                    
+                    # rendering the craft button
+                    self.craftButton.Render(screen, events)  # idk how to move the update sequence to another section because of how it was made and also I don't want to be redundently checking the able to craft the recipe
+                    
+                    # checking if the player is trying to craft
+                    validRecipe = craftingRecipesTier1[self.selectedRecipe].CheckIngredients(self)
+                    if not validRecipe:
+                        if self.craftButton.state not in [UI.Button.States.held, UI.Button.States.realeased]:
+                            # resetting the cashed render
+                            self.craftButton.state = UI.Button.States.held
+                            self.craftButton.forceUpdate = True
+                            self.craftButton.textRenderer.size = self.craftButton.textSize - 3
+                        else: self.craftButton.state = UI.Button.States.held  # forcing it to stay as held
+                    elif self.craftButton.state == UI.Button.States.pressed and events.mouseStates["left"] == Events.MouseStates.pressed:
+                        # crafting the recipe the player selected
+                        craftingRecipesTier1[self.selectedRecipe].Craft(self)
+    
     # gets the current animation state of the player
     def GetAnimationState(self, events: Events.Manager, dt: float) -> PlayerStates:
         if ord("d") in events.held or pygame.K_RIGHT in events.held:
@@ -650,10 +845,16 @@ class Player (Entity):
 
     # damages the player
     def Damage(self, damage: int) -> None:
-        self.health = max(self.health - damage, 0)
+        # checking for armor
+        finalDamage = damage
+        if self.selectedArmor != -1:  # checking if the player is wearing armor
+            finalDamage = round(playerArmors[self.armorInventory[self.selectedArmor].name].ReduceDamage(damage), 0)
+        
+        # damaging the player
+        self.health = max(self.health - finalDamage, 0)
         if self.health <= 0:
             pass  # kill the player
-
+    
     # updating the player
     def Update(self, events: Events.Manager, dt: float) -> None:
         # dashing
@@ -666,16 +867,22 @@ class Player (Entity):
         
         # moving the player based on keyboard input
         inputed = [False, False]
-        if ord("w") in events.held or pygame.K_UP in events.held:
+        inputs = {
+            "up": ord("w") in events.held or pygame.K_UP in events.held,
+            "down": ord("s") in events.held or pygame.K_DOWN in events.held,
+            "left": ord("a") in events.held or pygame.K_LEFT in events.held,
+            "right": ord("d") in events.held or pygame.K_RIGHT in events.held
+        }
+        if inputs["up"] and not inputs["down"]:
             inputed[1] = True
             self.velocity[1] = Mix(self.velocity[1], -self.stats["speed"]*self.dash, dt*15)
-        if ord("s") in events.held or pygame.K_DOWN in events.held:
+        if inputs["down"] and not inputs["up"]:
             inputed[1] = True
             self.velocity[1] = Mix(self.velocity[1], self.stats["speed"]*self.dash, dt*15)
-        if ord("a") in events.held or pygame.K_LEFT in events.held:
+        if inputs["left"] and not inputs["right"]:
             inputed[0] = True
             self.velocity[0] = Mix(self.velocity[0], -self.stats["speed"]*self.dash, dt*15)
-        if ord("d") in events.held or pygame.K_RIGHT in events.held:
+        if inputs["right"] and not inputs["left"]:
             inputed[0] = True
             self.velocity[0] = Mix(self.velocity[0], self.stats["speed"]*self.dash, dt*15)
         
@@ -684,17 +891,75 @@ class Player (Entity):
             if str(i) in events.typed:
                 if i <= len(self.weaponInventory):
                     self.weaponSlot = i - 1
-                #self.weapon = playerWeapons[[key for key in playerWeapons][i-1]]
                 break
         
         # adding drag once the player stops moving
-        if not inputed[0]: self.velocity[0] = Mix(self.velocity[0], 0, dt*20)
-        if not inputed[1]: self.velocity[1] = Mix(self.velocity[1], 0, dt*20)
+        if not inputed[0]: self.velocity[0] = Mix(self.velocity[0], 0, dt*10)
+        if not inputed[1]: self.velocity[1] = Mix(self.velocity[1], 0, dt*10)
 
         weapon = self.weaponInventory[self.weaponSlot]
+        validToFire = True  # if it's valid to fire on this frame
+
+        # checking if the player is in a crafting menu
+        if self.inCraftingBenchT1:
+            # checking if the player has moved away from the crafting bench
+            dif = [player.position[0]-self.inCraftingBenchT1[0], player.position[1]-self.inCraftingBenchT1[1]]
+            dst = dif[0]**2 + dif[1]**2
+            if dst > self.stats["reach"]: self.inCraftingBenchT1 = False  # closing the menu
+
+            # checking if the player has selected a recipe
+            if events.mouseStates["left"] == Events.MouseStates.pressed:
+                i = 0
+                cellSize = 24*2 + 2+2 + 2+2 + 5  # 56 i think
+                numCells = 4#265//cellSize#240 // cellSize
+                offset = (265 - numCells*cellSize)*0.5
+                for recipe in craftingRecipesTier1:
+                    x = (i%numCells) * cellSize + 60 + offset
+                    y = (i//numCells) * cellSize + 60+250
+                    screen.blit(recipe.surface, (x, y))
+                    if recipe.CheckCollision((x, y), events.mousePos):
+                        # selecting the recipe
+                        self.selectedRecipe = i
+                        validToFire = False  # the player shouldn't shoot when messing with the menu
+                        break
+                    i += 1
+                
+                # checking if the player was clicking the crafting window (to stop the gun from firing)
+                if (events.mousePos[0] > 60 and events.mousePos[0] < 325) and (events.mousePos[1] > 60 and events.mousePos[1] < 275): validToFire = False
+        else:  # making sure the padding for the crafting menu is reset if it's not actively open
+            self.leftPadding = 0
+        
+        # checking if the player click on a cell in the inventory to stop it from firing and also to interact with it
+        if self.openInventory:
+            if events.mouseStates["left"] == Events.MouseStates.pressed:
+                width = screenSize[0] - 120 - self.leftPadding - self.rightPadding  # 60 padding on each side
+                cellSize = 24*2 + 2+2 + 2+2 + 5  # 56 i think
+                cells = width // cellSize
+
+                # rendering the inventory
+                i = 0
+                for slot in self.inventorySlots+self.armorInventory:
+                    x = (i%cells) * cellSize + 60 + self.leftPadding
+                    y = (i//cells) * cellSize + 60
+                    clicked = slot.CheckCollision((x, y), events.mousePos)
+                    if clicked:  # checking if the box was clicked
+                        validToFire = False
+                        if slot.itemType == DropTypes.Armor:  # selecting the armor and deselecting any previously selected ones
+                            if self.selectedArmor > -1:
+                                # resetting the old selected one
+                                oldSlot = self.armorInventory[self.selectedArmor]
+                                oldSlot.highlighted = False
+                                oldSlot.UpdateCash(oldSlot.amount)
+                            
+                            # selecting the new one
+                            self.selectedArmor = self.armorInventory.index(slot)
+                            slot.highlighted = True
+                            slot.UpdateCash(slot.amount)
+                        break
+                    i += 1
 
         # checking if the weapon should fire
-        if weapon.ValidFire(events, dt):
+        if validToFire and weapon.ValidFire(events, dt):
             # firing the weapon
             self.projectiles += weapon.Fire(self)
 
@@ -703,8 +968,30 @@ class Player (Entity):
             weapon.Reload()
         
         # opening the inventory
-        if ord("e") in events.events: self.openInventory = not self.openInventory
-        if pygame.K_ESCAPE in events.held: self.openInventory = False
+        if pygame.K_TAB in events.events:
+            self.openInventory = not self.openInventory
+            self.inCraftingBenchT1 = False
+        
+        # closing different menus
+        if pygame.K_ESCAPE in events.held:
+            self.openInventory = False
+            self.inCraftingBenchT1 = False
+        
+        # checking if the player is trying to interact with an object
+        if events.mouseStates["right"] == Events.MouseStates.pressed:
+            # making sure the object is in range
+            mapMousePos = [cameraPos[0] - screenSize[0]//2 + events.mousePos[0], cameraPos[1] - screenSize[1]//2 + events.mousePos[1]]
+            dif = [mapMousePos[0] - player.position[0], mapMousePos[1] - player.position[1]]
+            dst = dif[0]**2 + dif[1]**2
+            if dst <= self.stats["reach"]:
+                # checking what the player is clicking
+                tileMousePos = tileMap.GetGridPosition(mapMousePos)
+                mouseTile = tileMap.GetTileNumber(tileMousePos)
+                if not self.inCraftingBenchT1 and mouseTile in tier1CraftingTiles:
+                    self.inCraftingBenchT1 = [self.position[0], self.position[1]]
+                    self.openInventory = True
+                    self.leftPadding = 300  # the width of the crafting tab
+                    self.selectedRecipe = -1  # no recipe is selected when you first open the menu
 
         # updating the parent class (does most of the moving)
         super().Update(events, dt)
@@ -740,15 +1027,16 @@ class Player (Entity):
             projectile.Render(screen, lightMap)
         
         # rendering the stuff in the parent class
-        super().Render(screen, lightMap)
+        super().Render(screen, lightMap, (0, 16))
 
         # rendering the weapon
         weapon = self.weaponInventory[self.weaponSlot]
-        weaponIndex = [key for key in playerWeapons].index(weapon.name)
+        allWeapons = [key for key in playerWeapons]
+        weaponIndex = allWeapons.index(weapon.name)
         yOffset = 0
         xOffset = 0
         if self.playerAnimation.state == PlayerStates.walkingLeft:
-            weaponIndex += 5
+            weaponIndex += len(allWeapons)
             if int(self.playerAnimation.frame % 2) == 1: xOffset = 4
         elif self.playerAnimation.state == PlayerStates.idle and int(self.playerAnimation.frame % 2) == 1: yOffset = 4
         elif int(self.playerAnimation.frame % 2) == 1: xOffset = -4
@@ -772,6 +1060,18 @@ class Player (Entity):
         pygame.draw.rect(screen, [255, 255, 0], [translatedPosition[0] - 17, translatedPosition[1] + 35, 35, 14])
         pygame.draw.rect(screen, [225, 225, 225], [translatedPosition[0] - 15, translatedPosition[1] + 37, 30, 10])
         pygame.draw.rect(screen, [75, 75, 75], [translatedPosition[0] - 15, translatedPosition[1] + 37, 30*(1-cooldown), 10])
+
+
+# a armor class
+class Armor:
+    def __init__(self, name: str, itemSprite: pygame.Surface, protection: float) -> None:
+        self.name = name
+        self.itemSprite = itemSprite
+        self.protection = protection  # a percentage of how much damage will be removed
+    
+    # adjusts a damage value for the protection of the armor
+    def ReduceDamage(self, damage: float) -> float:
+        return damage - damage*self.protection
 
 
 # a weapons class
@@ -800,7 +1100,7 @@ class Weapon:
         self.firer = firer
     
     # copies the object
-    def copy(self) -> object:
+    def Copy(self) -> object:
         return Weapon(self.name, self.fireRate, self.speed, self.damage, self.projectileObject, self.capacity, self.reloadSpeed, self.firer, self.amoType, capacityLeft=self.capacityLeft, maxLife=self.maxLife, accuracy=self.accuracy, selfKnockback=self.selfKnockback, knockback=self.knockback, burst=self.burst)
 
     # checks if it is valid to fire
@@ -963,13 +1263,16 @@ bulletLight = RadialLight(40, (160, 140, 50), 1, settings["render"]["lighting"][
 sparkLight = RadialLight(30, (175/2, 125/2, 0), 1, settings["render"]["lighting"]["sparks"])
 muzzleFlash = RadialLight(375, (225, 75, 25), 1, settings["render"]["lighting"]["muzzleFlash"])
 
+# different color pallets to keep all the colors in sync
+uiColorPallete = UI.ColorPalette((34, 32, 52), (98, 94, 128), (203, 219, 252), (255, 255, 255))
+
 # creating a basic tilemap (this will need to be replaced with a function to load and stuff for multiple levels and areas)
 img = pygame.image.load("ShooterTiles.png")
 tiles = Sprites.ScaleSprites(Sprites.LoadSpritesheet(img, (16, 16)), (64, 64))
 tileMap = TileMap.TileMap("shooterExampleLevel.txt", tiles, 64)
 tiles.insert(0, TileMap.blankTile)
 
-solidTiles = [1, 2, 3, 4, 5, 6, 7, 9, 11, 12, 13, 14, 16, 18, 19, 20, 27, 28, 29]
+solidTiles = [1, 2, 3, 4, 5, 6, 7, 9, 11, 12, 13, 14, 16, 18, 19, 20, 25, 26, 27, 28, 29, 32, 33, 34, 41, 42, 49, 50]
 tileHitBoxes = [
     HitBox((0, 0), (64, 24)),  # 1
     HitBox((0, 0), (64, 64)),  # 2
@@ -987,9 +1290,18 @@ tileHitBoxes = [
     HitBox((8, 28), (44, 36)),  # 18 amo crate
     HitBox((0, 0), (64, 24)),  # 19
     HitBox((0, 0), (64, 24)),  # 20
+    HitBox((0, 0), (64, 64)),  # 25 top of storage container
+    HitBox((0, 0), (64, 64)),  # 26 top of storage container
     HitBox((0, 0), (64, 24)),  # 27
     HitBox((0, 0), (64, 24)),  # 28
     HitBox((8, 28), (44, 36)),  # 29
+    HitBox((8, 20), (48, 44)),  # 32 top of empty oil barrel
+    HitBox((0, 0), (64, 64)),  # 33 mid section of storage container
+    HitBox((0, 0), (64, 64)),  # 34 mid section of storage container
+    HitBox((0, 0), (64, 64)),  # 41 top of storage container door
+    HitBox((0, 0), (64, 64)),  # 42 top of storage container door
+    HitBox((0, 0), (64, 32)),  # 49 bottom of storage container door
+    HitBox((0, 0), (64, 32)),  # 50 bottom of storage container door
 ]
 
 # creating the ground tiles (tile 8 is the origonal)
@@ -1007,9 +1319,10 @@ pygame.draw.circle(bulletSprite, (125, 62, 0), (3, 3), 3)
 pygame.draw.circle(bulletSprite, (255, 125, 0), (3, 3), 2)
 
 # creating the various weapons
-weaponSprites = Sprites.LoadSpritesheet(pygame.image.load("weaponsSpritesheet.png"), (16, 16))
+weaponSprites = Sprites.LoadSpritesheet(pygame.image.load("playerWeaponSpriteSheet.png"), (16, 16))
 weaponSprites = Sprites.ScaleSprites(weaponSprites, (64, 64))
 
+"""
 playerWeapons = {
             "AR-15"        : Weapon("AR-15", 0.2, 100, 2, Bullet, 15, 2, Friendlies.friendly, AmoType.Rifle, maxLife=0.5, accuracy=0.1, selfKnockback=150, knockback=300, burst=1),
             "Glock-19"     : Weapon("Glock-19", -0.1, 75, 2.5, Bullet, 12, 1.5, Friendlies.friendly, AmoType.Pistol, maxLife=0.5, accuracy=0, selfKnockback=75, knockback=200, burst=1),
@@ -1017,10 +1330,26 @@ playerWeapons = {
             "Remington-570": Weapon("Remington-570", -0.5, 75, 1, Bullet, 6, 3.5, Friendlies.friendly, AmoType.Shotgun, maxLife=0.2, accuracy=0.45, selfKnockback=125, knockback=300, burst=7),
             "MP-5"         : Weapon("MP-5", 0.055, 75, 0.75, Bullet, 65, 3, Friendlies.friendly, AmoType.Rifle, maxLife=0.45, accuracy=0.2, selfKnockback=25, knockback=125, burst=1)
 }
+"""
+playerWeapons = {
+            "SAR"           : Weapon("SAR"           , -0.25, 100, 1.5 , Bullet, 12, 2   , Friendlies.friendly, AmoType.Rifle  , maxLife=0.5 , accuracy=0.1 , selfKnockback=150, knockback=300, burst=1),
+            "Pipe Pistol"   : Weapon("Pipe Pistol"   , -0.2 , 75 , 1   , Bullet, 6 , 1.75, Friendlies.friendly, AmoType.Pistol , maxLife=0.5 , accuracy=0   , selfKnockback=75 , knockback=200, burst=1),
+            "Pipe Shotty"   : Weapon("Pipe Shotty"   , -0.75, 75 , 0.5 , Bullet, 2 , 3.5 , Friendlies.friendly, AmoType.Shotgun, maxLife=0.2 , accuracy=0.55, selfKnockback=125, knockback=300, burst=7),
+            "Rusty Revolver": Weapon("Rusty Revolver", -0.15, 90 , 1.75, Bullet, 6 , 2.5 , Friendlies.friendly, AmoType.Pistol , maxLife=0.25, accuracy=0.05, selfKnockback=325, knockback=350, burst=1),
+}
 
 mobWeapons = {
     "Pipe Pistol": Weapon("Pipe Pistol", 2, 65, 3, Bullet, 99999999, 0, Friendlies.enemy, AmoType.Pistol, -999999, maxLife=0.5, accuracy=0.2, selfKnockback=175, knockback=-350, burst=1),
-    "Pipe Shotty": Weapon("Pipe Shotty", 5, 55, 2, Bullet, 99999999, 0, Friendlies.enemy, AmoType.Shotgun, -999999, maxLife=0.5, accuracy=0.5, selfKnockback=65, knockback=-250, burst=6)
+    "Pipe Shotty": Weapon("Pipe Shotty", 5, 55, 2, Bullet, 99999999, 0, Friendlies.enemy, AmoType.Shotgun, -999999, maxLife=0.5, accuracy=0.5, selfKnockback=60, knockback=-200, burst=6)
+}
+
+# armor sprites
+armorItemSprites = Sprites.LoadSpritesheet(pygame.image.load("ArmorItems.png"), (16, 16))
+armorItemSprites = Sprites.ScaleSprites(armorItemSprites, (48, 48))
+playerArmors = {
+    "Wooden Plate": Armor("Wooden Plate", armorItemSprites[0], 0.05),
+    "Rusty Plate": Armor("Rusty Plate", armorItemSprites[1], 0.1),
+    "Steel Plate": Armor("Steel Plate", armorItemSprites[2], 0.2)
 }
 
 # creating a sprite for a spark
@@ -1041,8 +1370,23 @@ amoSprites = Sprites.ScaleSprites(amoSprites, (18, 18))
 # part drops
 partDropSprites = Sprites.LoadSpritesheet(pygame.image.load("ShooterPartsSheet.png"), (8, 8))
 partDropSprites = Sprites.ScaleSprites(partDropSprites, (24, 24))
-partNames = ["Rusty Pipe", "Scrap Metal", "Rusty Nails", "Wire Spool", "Wood", "Gunpowder", "Metal Pipe", "Metal Sheet", "Nails", "Brass Casings", "Jerry Can", "Oil Can", "blank", "blank", "blank", "blank", "blank", "Fire Powder"]
+partNames = ["Rusty Pipe", "Scrap Metal", "Rusty Nails", "Wire Spool", "Wood", "Gunpowder", "Metal Pipe", "Metal Sheet", "Nails", "Brass Casings", "Jerry Can", "Oil Can", "Spring", "blank", "blank", "blank", "blank", "Fire Powder"]
 partDropSpritesDoubleScale = Sprites.ScaleSprites(partDropSprites, (48, 48))
+
+for name in partNames:  # a hack to start the player with a ton of items to test crafting
+    if name != "blank": player.AddPart(name, 25)
+
+# crafting recipes and stuff
+weaponItemSprites = Sprites.ScaleSprites(Sprites.LoadSpritesheet(pygame.image.load("WeaponItemSprites.png"), (16, 16)), (48, 48))
+craftingRecipesTier1 = [
+    CraftingRecipe([["Rusty Pipe", 2], ["Wire Spool", 4], ["Wood", 2], ["Rusty Nails", 6], ["Scrap Metal", 5]], DropTypes.Weapon, "Pipe Shotty", 1, weaponItemSprites[2]),
+    CraftingRecipe([["Rusty Pipe", 1], ["Wire Spool", 6], ["Wood", 2], ["Rusty Nails", 10], ["Scrap Metal", 6], ["Spring", 1]], DropTypes.Weapon, "Rusty Revolver", 1, weaponItemSprites[3]),
+    CraftingRecipe([["Rusty Pipe", 1], ["Wire Spool", 10], ["Wood", 4], ["Rusty Nails", 14], ["Scrap Metal", 9], ["Spring", 5]], DropTypes.Weapon, "SAR", 1, weaponItemSprites[0]),
+    CraftingRecipe([["Brass Casings", 1], ["Rusty Nails", 2]], DropTypes.Amo, AmoType.Shotgun, 12, pygame.transform.scale(amoSprites[2], (48, 48))),
+    CraftingRecipe([["Wood", 12], ["Rusty Nails", 6]], DropTypes.Armor, "Wooden Plate", 12, armorItemSprites[0]),
+    CraftingRecipe([["Scrap Metal", 8], ["Rusty Nails", 12], ["Wire Spool", 2]], DropTypes.Armor, "Rusty Plate", 12, armorItemSprites[1])
+]
+tier1CraftingTiles = [19, 20, 27, 28]  # the tile numbers for the tier 1 crafting table
 
 # loading the sprites and animation for zombies
 zombieSprites = Sprites.LoadSpritesheet(pygame.image.load("zombieSpritesheet.png"), (16, 16))
@@ -1058,6 +1402,7 @@ zombieDrops = [
     [DropTypes.Part, "Brass Casings", (0, 1), 1],
     [DropTypes.Part, "Wood", (1, 2), 3],
     [DropTypes.Part, "Wire Spool", (0, 1), 1],
+    [DropTypes.Part, "Spring", (0, 1), 0.75],
 ]
 mobs = []
 
@@ -1065,6 +1410,7 @@ mobs = []
 solidObjects = [
     ShadowedObject([64*3, 64*9], [64, 64], sprite=tiles[1], renderShadows=True),
     ShadowedObject([64*6, 64*12], [64, 64], sprite=tiles[1], renderShadows=True),
+    ShadowedObject(((21-2)*64, (13-4)*64), [64*2, 64*4], renderObject=False, collideable=False),
 ]
 
 # all the light sources around the map
@@ -1133,7 +1479,7 @@ while True:
     # spawing enimies randomly
     if random.randint(0, round(25000*3 * dt)) == 0 and not len(mobs):
         for i in range(random.randint(5, 9)):
-            mob = Enemy(zombieSprites, [random.randint(100, 1100), random.randint(100, 650)], 1, 35, random.randint(1, 5), zombieDrops, weapon=mobWeapons[["Pipe Pistol", "Pipe Shotty"][random.randint(0, 1)]].copy())
+            mob = Enemy(zombieSprites, [random.randint(100, 1100), random.randint(100, 650)], 1, 35, random.randint(1, 5), zombieDrops, weapon=mobWeapons[["Pipe Pistol", "Pipe Shotty"][random.randint(0, 1)]].Copy())
             mobs.append(mob)
     
     # updating the camera position
