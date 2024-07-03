@@ -431,9 +431,9 @@ class Enemy (Entity):
                 translatedPosition = [round(self.position[0] - cameraPos[0] + screenSize[0]//2), round(self.position[1] - cameraPos[1] + screenSize[1]//2)]
 
                 if self.enemyAnimation.state == EnemyAnimationStates.walkingLeft:
-                    muzzleFlash.Render(lightMap, [translatedPosition[0], translatedPosition[1] + self.spriteSize[1]//2])
+                    muzzleFlash.Render(lightMap, [self.position[0], self.position[1] + self.spriteSize[1]//2])
                 else:
-                    muzzleFlash.Render(lightMap, [translatedPosition[0] + self.spriteSize[0], translatedPosition[1] + self.spriteSize[1]//2])
+                    muzzleFlash.Render(lightMap, [self.position[0] + self.spriteSize[0], self.position[1] + self.spriteSize[1]//2])
 
 
 # a particle class
@@ -1048,9 +1048,9 @@ class Player (Entity):
         if weapon.reloading: lastFired = weapon.lastFired + abs(weapon.fireRate) - weapon.reloadSpeed
         if weapon.fired and time.time() - lastFired < 0.05:  # min(abs(self.weapon.fireRate)-0.005, 0.05):
             if self.playerAnimation.state == PlayerStates.walkingLeft:
-                muzzleFlash.Render(lightMap, [renderPos[0], renderPos[1] + self.spriteSize[1]//2])
+                muzzleFlash.Render(lightMap, [self.position[0], self.position[1] + self.spriteSize[1]//2])
             else:
-                muzzleFlash.Render(lightMap, [renderPos[0] + self.spriteSize[0], renderPos[1] + self.spriteSize[1]//2])
+                muzzleFlash.Render(lightMap, [self.position[0] + self.spriteSize[0], self.position[1] + self.spriteSize[1]//2])
 
         # rendering the weapon cooldown
         cooldown = min((time.time() - weapon.lastFired) / abs(weapon.fireRate), 1)
