@@ -1,0 +1,29 @@
+{
+    "Objects": [
+        {
+            "position": [200, 200],
+            "size": [64, 64],
+            "tileNumber": 1,
+            "renderShadows": true,
+            "renderSelf": true,
+            "collideable": true
+        },
+        {
+            "position": [768, 192],
+            "size": [128, 320],
+            "tileNumber": 0,
+            "renderShadows": true,
+            "renderSelf": false,
+            "collideable": false
+        }
+    ],
+    "Lights": [
+        {
+            "radius": 200,
+            "color": [225, 225, 175],
+            "stepSize": 1,
+            "renderShadows": false,
+            "position": [0, 0]
+        }
+    ]
+}
