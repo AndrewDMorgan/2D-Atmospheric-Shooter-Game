@@ -1,5 +1,5 @@
 from Pygen import UI, Events, TileMap, Sprites, Animator
-import pygame, time, math, random
+import pygame, time, math, random, json
 from enum import Enum
 
 pygame.init()
@@ -331,6 +331,10 @@ class Entity:
 
         # rendering the light if there is one
         if self.light: self.light.Render(lightMap, [round(self.position[0]+lightOffset[0]), round(self.position[1]+lightOffset[1])])
+    
+    # runs when the entity is killed
+    def Kill(self) -> None:
+        pass
 
 
 # a class for an enemy
@@ -397,28 +401,7 @@ class Enemy (Entity):
     # called on kill of the mob
     def Kill(self) -> None:
         # dropping items
-        for drop in self.drops:
-            # drop type, name, amount range, chance (0-10)
-            randomChance = random.uniform(0, 10)
-            if drop[3] >= randomChance:
-                amount = random.randint(drop[2][0], drop[2][1])
-                if not amount: continue  # making sure to not create an item with 0 quantity
-                
-                # generating info for the dropped item
-                randomVelocity = [random.uniform(-5, 5), random.uniform(-5, 5)]
-                randVelLength = math.sqrt(randomVelocity[0]**2 + randomVelocity[1]**2)
-                randLength = random.uniform(75, 250)
-                randomVelocity = [randomVelocity[0]/randVelLength*randLength, randomVelocity[1]/randVelLength*randLength]
-
-                # creating the dropped item
-                if drop[0] == DropTypes.Amo:  # dropping amo                    
-                    dropSprite = amoSprites[[AmoType.Pistol, AmoType.LargeRifle, AmoType.Shotgun, AmoType.Rifle].index(drop[1])]
-                    dropped = DroppedItem(dropSprite, self.position, randomVelocity, drop[0], drop[1], amount=amount)
-                    player.projectiles.append(dropped)
-                elif drop[0] == DropTypes.Part:  # dropping parts
-                    dropSprite = partDropSprites[partNames.index(drop[1])]
-                    dropped = DroppedItem(dropSprite, self.position, randomVelocity, DropTypes.Part, drop[1], amount=amount)
-                    player.projectiles.append(dropped)
+        DropLoot(self.drops, self.position)
 
     # renders the mob
     def Render(self, screen: pygame.Surface, lightMap: pygame.Surface) -> None:
@@ -428,12 +411,10 @@ class Enemy (Entity):
         # checking for muzzel flash if the mob has a weapon
         if self.weapon:
             if time.time() - self.weapon.lastFired < 0.1:  # mobs don't reload so ignoring that
-                translatedPosition = [round(self.position[0] - cameraPos[0] + screenSize[0]//2), round(self.position[1] - cameraPos[1] + screenSize[1]//2)]
-
                 if self.enemyAnimation.state == EnemyAnimationStates.walkingLeft:
-                    muzzleFlash.Render(lightMap, [self.position[0], self.position[1] + self.spriteSize[1]//2])
+                    muzzleFlash.Render(lightMap, [round(self.position[0]), round(self.position[1] + self.spriteSize[1]//2)])
                 else:
-                    muzzleFlash.Render(lightMap, [self.position[0] + self.spriteSize[0], self.position[1] + self.spriteSize[1]//2])
+                    muzzleFlash.Render(lightMap, [round(self.position[0] + self.spriteSize[0]), round(self.position[1] + self.spriteSize[1]//2)])
 
 
 # a particle class
@@ -528,6 +509,24 @@ class Bullet (Particle):
                     player.velocity = [player.velocity[0] - normalized[0] * self.knockback, player.velocity[1] - normalized[1] * self.knockback]
 
                     return  # ending the loops
+    
+    # runs when the bullet hits something and is killed
+    def Kill(self) -> None:
+        gridPosition = tileMap.GetGridPosition(self.position)
+        tile = tileMap.GetTileNumber(gridPosition)
+        if tile == 9:  # checking if the bullet hit a wooden barrel
+            # breaking the barrel
+            tileMap.map[gridPosition[1]][gridPosition[0]] = 0
+            tileMap.map[gridPosition[1]+1][gridPosition[0]] = 30
+
+            # dropping loot
+            DropLoot(woodenBarrelDrops, self.position)
+        elif tile == 29:  # checking for an amo crate
+            # opening the amo crate
+            tileMap.map[gridPosition[1]][gridPosition[0]] = 39
+
+            # dropping loot
+            DropLoot(amoCrateDrops, [gridPosition[0]*64+32, gridPosition[1]*64+88])
 
 
 # a particle for when enimies die
@@ -739,6 +738,8 @@ class Player (Entity):
         self.leftPadding = 0  # padding for the position of the players inventory
         self.rightPadding = 0  # padding for the position of the players inventory
         self.craftButton = UI.Button((235, 235), (80, 30), uiColorPallete, "Craft", textSize=20, font="pixel2.ttf", transparentColor=(254, 254, 254))
+        self.craftIngredientCash = pygame.Surface((265, 215))
+        self.craftIngredientCash.set_colorkey((0, 0, 0))
 
     # adds a new piece of armor to the players inventory
     def AddArmor(self, name: str) -> None:
@@ -808,9 +809,12 @@ class Player (Entity):
                 if self.selectedRecipe >= 0:
                     # drawing the ingredients
                     i = 0
-                    for ingredient, amount in craftingRecipesTier1[self.selectedRecipe].ingredients:
-                        UI.DrawText(screen, 20, "pixel2.ttf", f"{amount}x {ingredient}", (65, 65 + i*25), uiColorPallete.textColor)
-                        i += 1
+
+                    screen.blit(self.craftIngredientCash, (65, 65))
+                    # cash this render
+                    #for ingredient, amount in craftingRecipesTier1[self.selectedRecipe].ingredients:
+                    #    UI.DrawText(screen, 20, "pixel2.ttf", f"{amount}x {ingredient}", (65, 65 + i*25), uiColorPallete.textColor)
+                    #    i += 1
                     
                     # rendering the craft button
                     self.craftButton.Render(screen, events)  # idk how to move the update sequence to another section because of how it was made and also I don't want to be redundently checking the able to craft the recipe
@@ -920,6 +924,15 @@ class Player (Entity):
                     if recipe.CheckCollision((x, y), events.mousePos):
                         # selecting the recipe
                         self.selectedRecipe = i
+                        
+                        # creating the new cash
+                        j = 0
+                        self.craftIngredientCash = pygame.Surface((265, 215))
+                        self.craftIngredientCash.set_colorkey((0, 0, 0))
+                        for ingredient, amount in craftingRecipesTier1[self.selectedRecipe].ingredients:
+                            UI.DrawText(self.craftIngredientCash, 20, "pixel2.ttf", f"{amount}x {ingredient}", (0, j*25), uiColorPallete.textColor)
+                            j += 1
+
                         validToFire = False  # the player shouldn't shoot when messing with the menu
                         break
                     i += 1
@@ -993,6 +1006,10 @@ class Player (Entity):
                     self.leftPadding = 300  # the width of the crafting tab
                     self.selectedRecipe = -1  # no recipe is selected when you first open the menu
 
+                    # clearing the cash
+                    self.craftIngredientCash = pygame.Surface((265, 215))
+                    self.craftIngredientCash.set_colorkey((0, 0, 0))
+
         # updating the parent class (does most of the moving)
         super().Update(events, dt)
         
@@ -1010,6 +1027,8 @@ class Player (Entity):
                 alive = alive and not TileMapCollision(projectile.position)
             if alive:
                 aliveProjectiles.append(projectile)
+            else:
+                projectile.Kill()
         
         # updating the projectiles
         self.projectiles = aliveProjectiles
@@ -1048,9 +1067,9 @@ class Player (Entity):
         if weapon.reloading: lastFired = weapon.lastFired + abs(weapon.fireRate) - weapon.reloadSpeed
         if weapon.fired and time.time() - lastFired < 0.05:  # min(abs(self.weapon.fireRate)-0.005, 0.05):
             if self.playerAnimation.state == PlayerStates.walkingLeft:
-                muzzleFlash.Render(lightMap, [self.position[0], self.position[1] + self.spriteSize[1]//2])
+                muzzleFlash.Render(lightMap, [round(self.position[0]), round(self.position[1] + self.spriteSize[1]//2)])
             else:
-                muzzleFlash.Render(lightMap, [self.position[0] + self.spriteSize[0], self.position[1] + self.spriteSize[1]//2])
+                muzzleFlash.Render(lightMap, [round(self.position[0] + self.spriteSize[0]), round(self.position[1] + self.spriteSize[1]//2)])
 
         # rendering the weapon cooldown
         cooldown = min((time.time() - weapon.lastFired) / abs(weapon.fireRate), 1)
@@ -1202,6 +1221,32 @@ class Weapon:
 #=============================================================================
 
 
+# drops loot
+def DropLoot(drops, position) -> None:
+    for drop in drops:
+        # drop type, name, amount range, chance (0-10)
+        randomChance = random.uniform(0, 10)
+        if drop[3] >= randomChance:
+            amount = random.randint(drop[2][0], drop[2][1])
+            if not amount: continue  # making sure to not create an item with 0 quantity
+            
+            # generating info for the dropped item
+            randomVelocity = [random.uniform(-5, 5), random.uniform(-5, 5)]
+            randVelLength = math.sqrt(randomVelocity[0]**2 + randomVelocity[1]**2)
+            randLength = random.uniform(75, 250)
+            randomVelocity = [randomVelocity[0]/randVelLength*randLength, randomVelocity[1]/randVelLength*randLength]
+            
+            # creating the dropped item
+            if drop[0] == DropTypes.Amo:  # dropping amo                    
+                dropSprite = amoSprites[[AmoType.Pistol, AmoType.LargeRifle, AmoType.Shotgun, AmoType.Rifle].index(drop[1])]
+                dropped = DroppedItem(dropSprite, position, randomVelocity, drop[0], drop[1], amount=amount)
+                player.projectiles.append(dropped)
+            elif drop[0] == DropTypes.Part:  # dropping parts
+                dropSprite = partDropSprites[partNames.index(drop[1])]
+                dropped = DroppedItem(dropSprite, position, randomVelocity, DropTypes.Part, drop[1], amount=amount)
+                player.projectiles.append(dropped)
+
+
 # mixes two values
 def Mix(l: any, r: any, v: float) -> float:
     return l * (1 - v) + r * v
@@ -1226,20 +1271,54 @@ def GetTileMapCollisionHitbox(pos: tuple) -> object:
         return tileHitBoxes[solidTiles.index(tile)]
 
 
+# loads a level
+def LoadLevel(levelName: str) -> None:
+    global tileMap, solidObjects, lights
+    solidObjects = []
+    lights = []
+
+    # loading the tileMap for the level
+    tileMap = TileMap.TileMap(f"{levelName}.txt", tiles, 64)
+
+    # opening the level information json file
+    levelFile = json.load(open(f"{levelName}.json"))
+
+    # loading the solid objects
+    for obj in levelFile["Objects"]:
+        solidObjects.append(ShadowedObject(
+            obj["position"],
+            obj["size"],
+            sprite=tiles[obj["tileNumber"]],
+            renderShadows=obj["renderShadows"],
+            renderObject=obj["renderSelf"],
+            collideable=obj["collideable"]
+        ))
+
+    # loading the lights
+    for light in levelFile["Lights"]:
+        lights.append(Light(
+            light["radius"],
+            light["color"],
+            light["stepSize"],
+            light["renderShadows"],
+            light["position"]
+        ))
+
+
 # updates the different things effected by the settings
 def UpdateSettings() -> None:
     global bulletLight, sparkLight, muzzleFlash
     
     # updating lighting information (mostly about shadows)
-    bulletLight = RadialLight(40, (160, 140, 50), 1, settings["render"]["lighting"]["bullet"])
+    bulletLight = RadialLight(40, (160, 140, 50), 1, settings["render"]["lighting"]["bullet"])  # is currently disabled since the bullet light doesn't match well, although might be used in other weapons, idk
     sparkLight = RadialLight(30, (175/2, 125/2, 0), 1, settings["render"]["lighting"]["sparks"])
     muzzleFlash = RadialLight(375, (225, 75, 25), 1, settings["render"]["lighting"]["muzzleFlash"])
 
 # the settings for variouse things
 settings = {
     "render": {
-        "lighting": {
-            "bullet": False,
+        "lighting": {  # aka shadows
+            "bullet": False,  # (lighting for this is currently disabled anyways) doesn't visually really do anything because the lighting is so minimal
             "sparks": False,  # doesn't visually really do anything because the lighting is so minimal
             "muzzleFlash": False
         }
@@ -1269,40 +1348,90 @@ uiColorPallete = UI.ColorPalette((34, 32, 52), (98, 94, 128), (203, 219, 252), (
 # creating a basic tilemap (this will need to be replaced with a function to load and stuff for multiple levels and areas)
 img = pygame.image.load("ShooterTiles.png")
 tiles = Sprites.ScaleSprites(Sprites.LoadSpritesheet(img, (16, 16)), (64, 64))
-tileMap = TileMap.TileMap("shooterExampleLevel.txt", tiles, 64)
+#tileMap = TileMap.TileMap("shooterExampleLevel.txt", tiles, 64)
 tiles.insert(0, TileMap.blankTile)
 
-solidTiles = [1, 2, 3, 4, 5, 6, 7, 9, 11, 12, 13, 14, 16, 18, 19, 20, 25, 26, 27, 28, 29, 32, 33, 34, 41, 42, 49, 50]
+solidTiles = [1, 2, 3, 4, 5, 6, 7, 9, 11, 12, 13, 14, 16, 18, 19, 20, 25, 26, 27, 28, 29, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 44, 45, 46, 49, 50, 52, 53, 54, 55, 56, 57, 59, 60, 61, 62, 63, 64, 68, 70, 71, 72, 78, 79, 80, 83, 84, 85, 86, 87, 88, 91, 92, 93, 94, 95, 96]
 tileHitBoxes = [
     HitBox((0, 0), (64, 24)),  # 1
-    HitBox((0, 0), (64, 64)),  # 2
+    HitBox((0, 32), (64, 32)),  # 2
     HitBox((0, 0), (12, 64)),  # 3
     HitBox((0, 0), (12, 64)),  # 4
     HitBox((52, 0), (12, 64)),  # 5
     HitBox((52, 0), (12, 64)),  # 6
     HitBox((20, 0), (24, 64)),  # 7
-    HitBox((8, 20), (48, 44)),  # 9 top of wooden barrel
+    HitBox((8, 52), (48, 12)),  # 9 top of wooden barrel
     HitBox((0, 0), (12, 64)),  # 11
     HitBox((0, 0), (12, 64)),  # 12
     HitBox((52, 0), (12, 64)),  # 13
     HitBox((52, 0), (12, 64)),  # 14
     HitBox((8, 20), (48, 44)),  # 16 top of oil barrel
-    HitBox((8, 28), (44, 36)),  # 18 amo crate
+    HitBox((8, 28), (44, 12)),  # 18 amo crate
     HitBox((0, 0), (64, 24)),  # 19
     HitBox((0, 0), (64, 24)),  # 20
     HitBox((0, 0), (64, 64)),  # 25 top of storage container
     HitBox((0, 0), (64, 64)),  # 26 top of storage container
     HitBox((0, 0), (64, 24)),  # 27
     HitBox((0, 0), (64, 24)),  # 28
-    HitBox((8, 28), (44, 36)),  # 29
+    HitBox((8, 28), (44, 12)),  # 29 amo crate w/ block under
     HitBox((8, 20), (48, 44)),  # 32 top of empty oil barrel
     HitBox((0, 0), (64, 64)),  # 33 mid section of storage container
     HitBox((0, 0), (64, 64)),  # 34 mid section of storage container
+    HitBox((8, 48), (48, 16)),  # 35 top of lanturn on box
+    HitBox((0, 0), (64, 64)),  # 36 top of house
+    HitBox((0, 0), (64, 64)),  # 37 top of house
+    HitBox((0, 0), (64, 64)),  # 38 top of house
+    HitBox((8, 28), (44, 12)),  # 39 opened amo crate
+    HitBox((8, 48), (48, 16)),  # 40 top of box
     HitBox((0, 0), (64, 64)),  # 41 top of storage container door
     HitBox((0, 0), (64, 64)),  # 42 top of storage container door
+    HitBox((0, 0), (64, 64)),  # 44 top mid of house
+    HitBox((0, 0), (64, 64)),  # 45 top mid of house
+    HitBox((0, 0), (64, 64)),  # 46 top mid of house
     HitBox((0, 0), (64, 32)),  # 49 bottom of storage container door
     HitBox((0, 0), (64, 32)),  # 50 bottom of storage container door
+    HitBox((0, 0), (64, 64)),  # 52 top roof of house
+    HitBox((0, 0), (64, 64)),  # 53 top roof of house
+    HitBox((0, 0), (64, 64)),  # 54 top roof of house
+    HitBox((0, 0), (64, 64)),  # 55 tree top
+    HitBox((0, 0), (64, 64)),  # 56 tree top
+    HitBox((8, 48), (48, 16)),  # 57 top of water barrel
+    HitBox((0, 0), (64, 24)),  # 59 top of metal crate
+    HitBox((0, 0), (64, 44)),  # 60 roof of house
+    HitBox((0, 0), (64, 44)),  # 61 roof of house
+    HitBox((0, 0), (64, 44)),  # 62 roof of house
+    HitBox((0, 0), (64, 64)),  # 63 tree mid
+    HitBox((0, 0), (64, 64)),  # 64 tree mid
+    HitBox((4, 0), (16, 24)),  # 68 bottom of house
+    HitBox((44, 0), (16, 24)),  # 70 bottom of house
+    HitBox((0, 0), (64, 24)),  # 71 tree bottom
+    HitBox((0, 0), (64, 24)),  # 72 tree bottom
+    HitBox((52, 0), (12, 64)),  # 78 fence
+    HitBox((0, 0), (12, 64)),  # 79 fence
+    HitBox((0, 0), (64, 24)),  # 80 fence
+    HitBox((12, 38), (52, 26)),  # 83 truck
+    HitBox((0, 4), (64, 60)),  # 84 truck
+    HitBox((0, 48), (56, 16)),  # 85 truck
+    HitBox((0, 0), (64, 24)),  # 86 fence
+    HitBox((0, 0), (64, 64)),  # 87 fence
+    HitBox((0, 0), (64, 64)),  # 88 fence
+    HitBox((8, 0), (56, 16)),  # 91 truck
+    HitBox((8, 0), (48, 16)),  # 92 truck
+    HitBox((0, 0), (56, 16)),  # 93 truck
+    HitBox((0, 0), (64, 24)),  # 94 fence
+    HitBox((0, 0), (64, 64)),  # 95 fence
+    HitBox((0, 0), (64, 24)),  # 96 fence
 ]
+
+# the centers of the tiles so they can be sorted by depth
+tileCenters = {}
+for i in range(97):
+    tileCenters[i] = -9999999
+
+playerHeightOffset = 1
+tileCenters[2]  = 84 - playerHeightOffset  # large/tall fence top
+tileCenters[9]  = 96 - playerHeightOffset  # wooden barrel
+tileCenters[22] = 32 - playerHeightOffset  # wooden barrel
 
 # creating the ground tiles (tile 8 is the origonal)
 groundTiles = [
@@ -1382,9 +1511,12 @@ craftingRecipesTier1 = [
     CraftingRecipe([["Rusty Pipe", 2], ["Wire Spool", 4], ["Wood", 2], ["Rusty Nails", 6], ["Scrap Metal", 5]], DropTypes.Weapon, "Pipe Shotty", 1, weaponItemSprites[2]),
     CraftingRecipe([["Rusty Pipe", 1], ["Wire Spool", 6], ["Wood", 2], ["Rusty Nails", 10], ["Scrap Metal", 6], ["Spring", 1]], DropTypes.Weapon, "Rusty Revolver", 1, weaponItemSprites[3]),
     CraftingRecipe([["Rusty Pipe", 1], ["Wire Spool", 10], ["Wood", 4], ["Rusty Nails", 14], ["Scrap Metal", 9], ["Spring", 5]], DropTypes.Weapon, "SAR", 1, weaponItemSprites[0]),
-    CraftingRecipe([["Brass Casings", 1], ["Rusty Nails", 2]], DropTypes.Amo, AmoType.Shotgun, 12, pygame.transform.scale(amoSprites[2], (48, 48))),
     CraftingRecipe([["Wood", 12], ["Rusty Nails", 6]], DropTypes.Armor, "Wooden Plate", 12, armorItemSprites[0]),
-    CraftingRecipe([["Scrap Metal", 8], ["Rusty Nails", 12], ["Wire Spool", 2]], DropTypes.Armor, "Rusty Plate", 12, armorItemSprites[1])
+    CraftingRecipe([["Scrap Metal", 8], ["Rusty Nails", 12], ["Wire Spool", 2]], DropTypes.Armor, "Rusty Plate", 12, armorItemSprites[1]),
+    CraftingRecipe([["Brass Casings", 1], ["Rusty Nails", 2]], DropTypes.Amo, AmoType.Shotgun, 12, pygame.transform.scale(amoSprites[2], (48, 48))),
+    CraftingRecipe([["Brass Casings", 1], ["Rusty Nails", 1]], DropTypes.Amo, AmoType.Pistol, 12, pygame.transform.scale(amoSprites[0], (48, 48))),
+    CraftingRecipe([["Brass Casings", 1], ["Rusty Nails", 1]], DropTypes.Amo, AmoType.Rifle, 8, pygame.transform.scale(amoSprites[3], (48, 48))),
+    CraftingRecipe([["Brass Casings", 1], ["Rusty Nails", 1]], DropTypes.Amo, AmoType.LargeRifle, 4, pygame.transform.scale(amoSprites[1], (48, 48))),
 ]
 tier1CraftingTiles = [19, 20, 27, 28]  # the tile numbers for the tier 1 crafting table
 
@@ -1406,19 +1538,42 @@ zombieDrops = [
 ]
 mobs = []
 
-# all the solid objects
-solidObjects = [
-    ShadowedObject([64*3, 64*9], [64, 64], sprite=tiles[1], renderShadows=True),
-    ShadowedObject([64*6, 64*12], [64, 64], sprite=tiles[1], renderShadows=True),
-    ShadowedObject(((21-2)*64, (13-4)*64), [64*2, 64*4], renderObject=False, collideable=False),
+# drops for various storage containers (amo crates and barrels)
+woodenBarrelDrops = [
+    [DropTypes.Part, "Rusty Pipe", (1, 2), 5.5],  # drop type, name, amount range, chance (0-10)
+    [DropTypes.Part, "Scrap Metal", (1, 3), 4],
+    [DropTypes.Part, "Rusty Nails", (1, 4), 5],
+    [DropTypes.Part, "Wood", (1, 9), 8],
+    [DropTypes.Part, "Wire Spool", (1, 2), 3],
+    [DropTypes.Part, "Spring", (1, 1), 2],
 ]
 
-# all the light sources around the map
-lights = [
-    #Light(125, (225, 225, 175), 1, False, (500, 250))
-    Light(200, (225, 225, 175), 1, False, (64*5 + 32, 64*5 + 32)),  # top left lanturn
-    Light(200, (225, 225, 175), 1, False, (64*17 + 32, 64*14 + 32))  # top left lanturn
+amoCrateDrops = [
+    [DropTypes.Amo, AmoType.Pistol, (14, 32), 7.5],  # drop type, name, amount range, chance (0-10)
+    [DropTypes.Amo, AmoType.LargeRifle, (2, 9), 5],
+    [DropTypes.Amo, AmoType.Rifle, (13, 25), 7.5],
+    [DropTypes.Amo, AmoType.Shotgun, (5, 14), 6.25],
 ]
+
+# all the solid objects
+#solidObjects = [
+#    ShadowedObject([64*3, 64*9], [64, 64], sprite=tiles[1], renderShadows=True),
+#    ShadowedObject([64*6, 64*12], [64, 64], sprite=tiles[1], renderShadows=True),
+#    ShadowedObject(((21-2)*64, (13-4)*64), [64*2, 64*4], renderObject=False, collideable=False),
+#]tileMap
+
+# all the light sources around the map
+#lights = [
+#    #Light(125, (225, 225, 175), 1, False, (500, 250))
+#    Light(200, (225, 225, 175), 1, False, (64*5 + 32, 64*5 + 32)),  # top left lanturn
+#    Light(200, (225, 225, 175), 1, False, (64*17 + 32, 64*14 + 32))  # top left lanturn
+#]
+
+# loading the first level
+tileMap=None
+solidObjects=None
+lights=None
+LoadLevel("ShooterL1")  # loads all the data from the save files for the level
 
 # creating the screen
 screenSize = (1200, 750)
@@ -1497,28 +1652,37 @@ while True:
         for y in range(dstAcross[1]+1):
             screen.blit(groundTiles[round((x+y+bx+by)%4)], [round(topLeftStart[0]+x*64), round(topLeftStart[1]+y*64)])
     
-    # drawing the rest of the ground
-    tileMap.Render(screen, cameraPos, screenSize)
-
     # creating the light map
     lightMap = pygame.Surface(screenSize)
     #lightMap.fill((10, 45, 20))  # good for night vision
-
-    # rendering the solid objects
-    for obj in solidObjects:
-        obj.Render(screen)
     
     # rendering all the lights
     for light in lights:
         light.Render(lightMap)
+
+    # the depth map to layer tiles and objects correctly (let's you walk behind objects and entities or infront)
+    depthMap = []
+
+    # drawing the rest of the ground
+    depthMap += tileMap.RenderDepth(screen, cameraPos, screenSize, tileCenters)
+
+    # rendering the solid objects
+    for obj in solidObjects:
+        #obj.Render(screen)
+        depth = obj.pos[1]
+        depthMap.append([obj, depth, screen])
     
     # rendering the player
-    player.Render(screen, lightMap)
+    #player.Render(screen, lightMap)
+    depth = player.position[1]
+    depthMap.append([player, depth, screen, lightMap])
 
     # rendering the mobs
     aliveEnemies = []
     for enemy in mobs:
-        enemy.Render(screen, lightMap)
+        #enemy.Render(screen, lightMap)
+        depth = enemy.position[1]
+        depthMap.append([enemy, depth, screen, lightMap])
         if enemy.health > 0:
             aliveEnemies.append(enemy)
         else:  # killing the enemy
@@ -1532,6 +1696,11 @@ while True:
                 spark = SparksParticle(enemy.position[::], [x/length * 100, y/length * 100], randomLife + random.uniform(-0.25, 0.25))
                 player.projectiles.append(spark)
     mobs = aliveEnemies
+
+    # sorting and rendering the objects
+    sortedDepthMap = sorted(depthMap, key=lambda args: args[1])
+    for obj, depth, *args in sortedDepthMap:
+        obj.Render(*args)
 
     # rendering the light map
     screen.blit(lightMap, [0, 0], special_flags=pygame.BLEND_MULT)
