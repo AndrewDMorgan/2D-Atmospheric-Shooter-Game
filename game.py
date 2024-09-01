@@ -4,6 +4,20 @@ from enum import Enum
 
 pygame.init()
 
+"""
+TODO
+
+Fix phasing into lamp posts (check the center of the player for point collision with the hitboxes)
+
+Shorten the player&enemy hitboxes so that they can go up to wall without needing a weird hitbox. This'll also fix other problems
+
+Store all areas that have a light rendered
+    Use that to only render areas that are visable
+
+In the sub ticks for bullets, add a check for objects
+
+"""
+
 # =============================================================================
 #                               Enums
 #=============================================================================
@@ -43,6 +57,41 @@ class DropTypes (Enum):
 
 
 # =============================================================================
+#                               Map Objects
+#=============================================================================
+
+
+# stores a unique hitbox for a tile since they don't always take up an entire block
+class HitBox:
+    # initialization
+    def __init__(self, pos: tuple, size: tuple) -> None:
+        self.pos = pos
+        self.size = size
+    
+    # checking for a collision
+    def Collide(self, position: tuple) -> bool:
+        xValid = self.pos[0] < position[0] and self.pos[0]+self.size[0] > position[0]
+        yValid = self.pos[1] < position[1] and self.pos[1]+self.size[1] > position[1]
+        return xValid and yValid
+    
+    # checking for a collision using lines
+    def CollideLineHorizontal(self, xSmall: int, xLarge: int, y: int) -> None:  # sees if a horizontal line collides with the hitbox
+        # check that at least 1 verticle line is inbetween the input points
+        y1, y2 = self.pos[1], self.pos[1]+self.size[1]
+        if y < y1 or y > y2: return  # not alligned vertically
+        x1, x2 = self.pos[0], self.pos[0]+self.size[0]
+        return (x1 > xSmall and x1 < xLarge) or (x2 > xSmall and x2 < xLarge) or (x1 < xSmall and x2 > xLarge)
+    
+    # checking for a collision using lines
+    def CollideLineVerticle(self, ySmall: int, yLarge: int, x: int) -> None:  # sees if a verticle line collides with the hitbox
+        # check that at least 1 horizontal line is inbetween the input points
+        x1, x2 = self.pos[0], self.pos[0]+self.size[0]
+        if x < x1 or x > x2: return  # not alligned horizontally
+        y1, y2 = self.pos[1], self.pos[1]+self.size[1]
+        return (y1 > ySmall and y1 < yLarge) or (y2 > ySmall and y2 < yLarge) or (y1 < ySmall and y2 > yLarge)
+
+
+# =============================================================================
 #                               Light Objects
 #=============================================================================
 
@@ -56,25 +105,28 @@ class RadialLight:
         self.step = step
         self.renderShadows = renderShadows
 
+        self.lightFeild = pygame.Surface([self.radius*2, self.radius*2])
+
         # generating the radia light
-        self.surface = pygame.Surface([radius*2, radius*2])
-        for r in range(radius, 0, -step):
-            brightness = pow(1-r/radius, 2)
-            pygame.draw.circle(self.surface, (color[0] * brightness, color[1] * brightness, color[2] * brightness), [radius, radius], r)
+        newRadius = radius//step
+        self.surface = pygame.Surface([newRadius*2, newRadius*2])
+        for r in range(newRadius, 0, -1):
+            brightness = pow(1-r/newRadius, 2)
+            pygame.draw.circle(self.surface, (color[0] * brightness, color[1] * brightness, color[2] * brightness), [newRadius, newRadius], r)
+        self.surface = pygame.transform.scale(self.surface, (radius*2, radius*2))
     
     # rendering the radial light
     def Render(self, lightMap: pygame.Surface, pos: tuple) -> None:
-        transPos = [pos[0] - cameraPos[0] + screenSize[0]//2, pos[1] - cameraPos[1] + screenSize[1]//2]
+        transPos = [pos[0] - cameraPos[0] + zoomedScreenSize[0]//2, pos[1] - cameraPos[1] + zoomedScreenSize[1]//2]
         if not self.renderShadows:
             lightMap.blit(self.surface, [round(transPos[0] - self.radius), round(transPos[1] - self.radius)], special_flags=pygame.BLEND_ADD)
             return
         
         # rendering the light
-        lightFeild = pygame.Surface([self.radius*2, self.radius*2])
-        lightFeild.blit(self.surface, [0, 0])
+        self.lightFeild.blit(self.surface, [0, 0])
         for obj in solidObjects:
-            obj.RenderShadow(lightFeild, pos, self.radius)
-        lightMap.blit(lightFeild, [round(transPos[0] - self.radius), round(transPos[1] - self.radius)], special_flags=pygame.BLEND_ADD)
+            obj.RenderShadow(self.lightFeild, pos, self.radius)
+        lightMap.blit(self.lightFeild, [round(transPos[0] - self.radius), round(transPos[1] - self.radius)], special_flags=pygame.BLEND_ADD)
 
 
 # a light with a fixed position
@@ -88,13 +140,15 @@ class Light (RadialLight):
 
 # a solid object that casts shadows
 class ShadowedObject:
-    def __init__(self, pos: tuple, size: tuple, sprite: pygame.Surface=None, renderShadows: bool=True, renderObject: bool=True, collideable: bool=True) -> None:
+    def __init__(self, pos: tuple, size: tuple, hitBox: HitBox, sprite: pygame.Surface=None, renderShadows: bool=True, renderObject: bool=True, collideable: bool=True) -> None:
         self.pos = pos
         self.size = size
 
         self.renderShadows = renderShadows
         self.renderObject = renderObject
         self.collideable = collideable
+
+        self.hitBox = hitBox
 
         self.sprite = sprite
         if not self.sprite:
@@ -107,12 +161,13 @@ class ShadowedObject:
     
     # checks collision wiht a given point
     def CheckCollision(self, point: tuple) -> bool:
-        return self.collideable and point[0] >= self.pos[0] and point[0] <= self.pos[0] + self.size[0] and point[1] >= self.pos[1] and point[1] <= self.pos[1] + self.size[1]
+        #return self.collideable and point[0] >= self.pos[0] and point[0] <= self.pos[0] + self.size[0] and point[1] >= self.pos[1] and point[1] <= self.pos[1] + self.size[1]
+        return self.collideable and self.hitBox.Collide([point[0]-self.pos[0], point[1]-self.pos[1]])
 
     # rendering the object
     def Render(self, screen: pygame.Surface) -> None:
         if not self.renderObject: return  # in case it's for a hitbox and not a shadow
-        position = [round(self.pos[0] - cameraPos[0] + screenSize[0]//2), round(self.pos[1] - cameraPos[1] + screenSize[1]//2)]
+        position = [round(self.pos[0] - cameraPos[0] + zoomedScreenSize[0]//2), round(self.pos[1] - cameraPos[1] + zoomedScreenSize[1]//2)]
         screen.blit(self.sprite, position)
         #pygame.draw.rect(screen, (0, 225, 0), [self.pos[0] - cameraPos[0] + screenSize[0]//2, self.pos[1] - cameraPos[1] + screenSize[1]//2, self.size[0], self.size[1]])
     
@@ -197,41 +252,6 @@ class ShadowedObject:
         pygame.draw.polygon(surf, (0, 0, 0), points)
         pygame.draw.rect(surf, (255, 255, 255), [self.pos[0] - position[0] + radius, self.pos[1] - position[1] + radius, self.size[0], self.size[1]])
         lightMap.blit(surf, [0, 0])
-
-
-# =============================================================================
-#                               Map Objects
-#=============================================================================
-
-
-# stores a unique hitbox for a tile since they don't always take up an entire block
-class HitBox:
-    # initialization
-    def __init__(self, pos: tuple, size: tuple) -> None:
-        self.pos = pos
-        self.size = size
-    
-    # checking for a collision
-    def Collide(self, position: tuple) -> bool:
-        xValid = self.pos[0] < position[0] and self.pos[0]+self.size[0] > position[0]
-        yValid = self.pos[1] < position[1] and self.pos[1]+self.size[1] > position[1]
-        return xValid and yValid
-    
-    # checking for a collision using lines
-    def CollideLineHorizontal(self, xSmall: int, xLarge: int, y: int) -> None:  # sees if a horizontal line collides with the hitbox
-        # check that at least 1 verticle line is inbetween the input points
-        y1, y2 = self.pos[1], self.pos[1]+self.size[1]
-        if y < y1 or y > y2: return  # not alligned vertically
-        x1, x2 = self.pos[0], self.pos[0]+self.size[0]
-        return (x1 > xSmall and x1 < xLarge) or (x2 > xSmall and x2 < xLarge) or (x1 < xSmall and x2 > xLarge)
-    
-    # checking for a collision using lines
-    def CollideLineVerticle(self, ySmall: int, yLarge: int, x: int) -> None:  # sees if a verticle line collides with the hitbox
-        # check that at least 1 horizontal line is inbetween the input points
-        x1, x2 = self.pos[0], self.pos[0]+self.size[0]
-        if x < x1 or x > x2: return  # not alligned horizontally
-        y1, y2 = self.pos[1], self.pos[1]+self.size[1]
-        return (y1 > ySmall and y1 < yLarge) or (y2 > ySmall and y2 < yLarge) or (y1 < ySmall and y2 > yLarge)
 
 
 # =============================================================================
@@ -325,12 +345,13 @@ class Entity:
     # rendering the entity
     def Render(self, screen: pygame.Surface, lightMap: pygame.Surface, lightOffset: tuple=(0, 0)) -> None:
         # rendering the sprite
-        translatedPosition = [self.position[0] - cameraPos[0] + screenSize[0]//2, self.position[1] - cameraPos[1] + screenSize[1]//2]
+        translatedPosition = [self.position[0] - cameraPos[0] + zoomedScreenSize[0]//2, self.position[1] - cameraPos[1] + zoomedScreenSize[1]//2]
         width, height = self.sprite.get_size()
         screen.blit(self.sprite, [round(translatedPosition[0]-width//2), round(translatedPosition[1]-height//2)])
 
         # rendering the light if there is one
-        if self.light: self.light.Render(lightMap, [round(self.position[0]+lightOffset[0]), round(self.position[1]+lightOffset[1])])
+        if self.light:
+            self.light.Render(lightMap, [round(self.position[0]+lightOffset[0]), round(self.position[1]+lightOffset[1])])
     
     # runs when the entity is killed
     def Kill(self) -> None:
@@ -543,10 +564,10 @@ class SparksParticle (Particle):
         self.velocity = [self.velocity[0]*0.95, self.velocity[1]*0.95]
 
         # moving the particle to the corner of the screen when it's about to die
-        screenPos = [self.position[0] - cameraPos[0] + screenSize[0]//2, self.position[1] - cameraPos[1] + screenSize[1]//2]
+        screenPos = [self.position[0] - cameraPos[0] + zoomedScreenSize[0]//2, self.position[1] - cameraPos[1] + zoomedScreenSize[1]//2]
         if self.maxLife - (time.time() - self.lifeTime) < 2:
             # checking if the particle is on screen and should be moved
-            if screenPos[0] >= 0 and screenPos[0] <= screenSize[0] and screenPos[1] >= 0 and screenPos[1] <= screenSize[1]:
+            if screenPos[0] >= 0 and screenPos[0] <= zoomedScreenSize[0] and screenPos[1] >= 0 and screenPos[1] <= zoomedScreenSize[1]:
                 length = math.sqrt(screenPos[0]**2 + screenPos[1]**2)
                 self.velocity = [
                     Mix(self.velocity[0], -screenPos[0]/length*850, dt * 30),
@@ -682,6 +703,7 @@ class Player (Entity):
         # stats about the player
         self.stats = {
             "dashCooldown": 5.5,
+            "dashSpeed": 5,
             "speed": 100,
             "reach": 100**2,  # idk if this will be a changeable stat, the squaring is so magnitudes can be compared instead of distances to save a square root operation
         }
@@ -864,7 +886,7 @@ class Player (Entity):
         # dashing
         timeSinceDash = time.time() - self.lastDashed
         if pygame.K_SPACE in events.events and timeSinceDash > self.stats["dashCooldown"]:
-            self.dash = 5
+            self.dash = self.stats["dashSpeed"]
             self.lastDashed = time.time()
         elif timeSinceDash > 0.2:
             self.dash = Mix(self.dash, 1, dt*5)
@@ -927,8 +949,9 @@ class Player (Entity):
                         
                         # creating the new cash
                         j = 0
-                        self.craftIngredientCash = pygame.Surface((265, 215))
-                        self.craftIngredientCash.set_colorkey((0, 0, 0))
+                        #self.craftIngredientCash = pygame.Surface((265, 215))
+                        self.craftIngredientCash.fill((0, 0, 0))
+                        #self.craftIngredientCash.set_colorkey((0, 0, 0))
                         for ingredient, amount in craftingRecipesTier1[self.selectedRecipe].ingredients:
                             UI.DrawText(self.craftIngredientCash, 20, "pixel2.ttf", f"{amount}x {ingredient}", (0, j*25), uiColorPallete.textColor)
                             j += 1
@@ -993,7 +1016,7 @@ class Player (Entity):
         # checking if the player is trying to interact with an object
         if events.mouseStates["right"] == Events.MouseStates.pressed:
             # making sure the object is in range
-            mapMousePos = [cameraPos[0] - screenSize[0]//2 + events.mousePos[0], cameraPos[1] - screenSize[1]//2 + events.mousePos[1]]
+            mapMousePos = [cameraPos[0] - zoomedScreenSize[0]//2 + events.mousePos[0]//zoom, cameraPos[1] - zoomedScreenSize[1]//2 + events.mousePos[1]//zoom]
             dif = [mapMousePos[0] - player.position[0], mapMousePos[1] - player.position[1]]
             dst = dif[0]**2 + dif[1]**2
             if dst <= self.stats["reach"]:
@@ -1007,8 +1030,9 @@ class Player (Entity):
                     self.selectedRecipe = -1  # no recipe is selected when you first open the menu
 
                     # clearing the cash
-                    self.craftIngredientCash = pygame.Surface((265, 215))
-                    self.craftIngredientCash.set_colorkey((0, 0, 0))
+                    self.craftIngredientCash.fill((0, 0, 0))
+                    #self.craftIngredientCash = pygame.Surface((265, 215))
+                    #self.craftIngredientCash.set_colorkey((0, 0, 0))
 
         # updating the parent class (does most of the moving)
         super().Update(events, dt)
@@ -1016,7 +1040,8 @@ class Player (Entity):
         # updating the projectiles
         aliveProjectiles = []
         for projectile in self.projectiles:
-            projectile.Update(events, dt)
+            if projectile.name == "spark": projectile.Update(events, dt)
+            else: projectile.Update(events, dt)
 
             # checking if the projectile is still alive
             alive = time.time() - projectile.lifeTime < projectile.maxLife
@@ -1059,7 +1084,7 @@ class Player (Entity):
             if int(self.playerAnimation.frame % 2) == 1: xOffset = 4
         elif self.playerAnimation.state == PlayerStates.idle and int(self.playerAnimation.frame % 2) == 1: yOffset = 4
         elif int(self.playerAnimation.frame % 2) == 1: xOffset = -4
-        renderPos = [self.position[0] - self.spriteSize[0]//2 - cameraPos[0] + screenSize[0]//2 - xOffset, self.position[1] - self.spriteSize[1]//2 - cameraPos[1] + screenSize[1]//2 + yOffset]
+        renderPos = [self.position[0] - self.spriteSize[0]//2 - cameraPos[0] + zoomedScreenSize[0]//2 - xOffset, self.position[1] - self.spriteSize[1]//2 - cameraPos[1] + zoomedScreenSize[1]//2 + yOffset]
         screen.blit(weaponSprites[weaponIndex], renderPos)
 
         # rendering muzzel flash
@@ -1075,7 +1100,7 @@ class Player (Entity):
         cooldown = min((time.time() - weapon.lastFired) / abs(weapon.fireRate), 1)
         if weapon.reloading:
             cooldown = min((time.time() - lastFired) / abs(weapon.reloadSpeed), 1)
-        translatedPosition = [self.position[0] - cameraPos[0] + screenSize[0]//2, self.position[1] - cameraPos[1] + screenSize[1]//2]
+        translatedPosition = [self.position[0] - cameraPos[0] + zoomedScreenSize[0]//2, self.position[1] - cameraPos[1] + zoomedScreenSize[1]//2]
         pygame.draw.rect(screen, [255, 255, 0], [translatedPosition[0] - 17, translatedPosition[1] + 35, 35, 14])
         pygame.draw.rect(screen, [225, 225, 225], [translatedPosition[0] - 15, translatedPosition[1] + 37, 30, 10])
         pygame.draw.rect(screen, [75, 75, 75], [translatedPosition[0] - 15, translatedPosition[1] + 37, 30*(1-cooldown), 10])
@@ -1221,6 +1246,17 @@ class Weapon:
 #=============================================================================
 
 
+# renders the ground
+def RenderGround(zoomDisplay: pygame.Surface) -> None:
+    topLeft = [cameraPos[0] - zoomedScreenSize[0]//2, cameraPos[1] - zoomedScreenSize[1]//2]
+    topLeftStart = [-(topLeft[0] % tileMap.tileSize), -(topLeft[1] % tileMap.tileSize)]
+    dstAcross = [math.ceil(zoomedScreenSize[0]/tileMap.tileSize), math.ceil(zoomedScreenSize[1]/tileMap.tileSize)]
+    bx, by = topLeft[0]//tileMap.tileSize, topLeft[1]//tileMap.tileSize
+    for x in range(dstAcross[0]+1):
+        for y in range(dstAcross[1]+1):
+            zoomDisplay.blit(groundTiles[round((x+y+bx+by)%4)], [round(topLeftStart[0]+x*64), round(topLeftStart[1]+y*64)])
+
+
 # drops loot
 def DropLoot(drops, position) -> None:
     for drop in drops:
@@ -1288,6 +1324,7 @@ def LoadLevel(levelName: str) -> None:
         solidObjects.append(ShadowedObject(
             obj["position"],
             obj["size"],
+            tileHitBoxes[obj["tileNumber"]],
             sprite=tiles[obj["tileNumber"]],
             renderShadows=obj["renderShadows"],
             renderObject=obj["renderSelf"],
@@ -1354,12 +1391,12 @@ tiles.insert(0, TileMap.blankTile)
 solidTiles = [1, 2, 3, 4, 5, 6, 7, 9, 11, 12, 13, 14, 16, 18, 19, 20, 25, 26, 27, 28, 29, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 44, 45, 46, 49, 50, 52, 53, 54, 55, 56, 57, 59, 60, 61, 62, 63, 64, 68, 70, 71, 72, 78, 79, 80, 83, 84, 85, 86, 87, 88, 91, 92, 93, 94, 95, 96]
 tileHitBoxes = [
     HitBox((0, 0), (64, 24)),  # 1
-    HitBox((0, 32), (64, 32)),  # 2
+    HitBox((0, 46), (64, 18)),  # 2
     HitBox((0, 0), (12, 64)),  # 3
     HitBox((0, 0), (12, 64)),  # 4
     HitBox((52, 0), (12, 64)),  # 5
     HitBox((52, 0), (12, 64)),  # 6
-    HitBox((20, 0), (24, 64)),  # 7
+    HitBox((20, 62), (24, 2)),  # 7
     HitBox((8, 52), (48, 12)),  # 9 top of wooden barrel
     HitBox((0, 0), (12, 64)),  # 11
     HitBox((0, 0), (12, 64)),  # 12
@@ -1393,8 +1430,8 @@ tileHitBoxes = [
     HitBox((0, 0), (64, 64)),  # 52 top roof of house
     HitBox((0, 0), (64, 64)),  # 53 top roof of house
     HitBox((0, 0), (64, 64)),  # 54 top roof of house
-    HitBox((0, 0), (64, 64)),  # 55 tree top
-    HitBox((0, 0), (64, 64)),  # 56 tree top
+    HitBox((0, 32), (64, 32)),  # 55 tree top
+    HitBox((0, 32), (64, 32)),  # 56 tree top
     HitBox((8, 48), (48, 16)),  # 57 top of water barrel
     HitBox((0, 0), (64, 24)),  # 59 top of metal crate
     HitBox((0, 0), (64, 44)),  # 60 roof of house
@@ -1409,15 +1446,15 @@ tileHitBoxes = [
     HitBox((52, 0), (12, 64)),  # 78 fence
     HitBox((0, 0), (12, 64)),  # 79 fence
     HitBox((0, 0), (64, 24)),  # 80 fence
-    HitBox((12, 38), (52, 26)),  # 83 truck
-    HitBox((0, 4), (64, 60)),  # 84 truck
-    HitBox((0, 48), (56, 16)),  # 85 truck
+    HitBox((12, 62), (52, 2)),  # 83 truck
+    HitBox((0, 62), (64, 2)),  # 84 truck
+    HitBox((0, 62), (56, 2)),  # 85 truck
     HitBox((0, 0), (64, 24)),  # 86 fence
     HitBox((0, 0), (64, 64)),  # 87 fence
     HitBox((0, 0), (64, 64)),  # 88 fence
-    HitBox((8, 0), (56, 16)),  # 91 truck
-    HitBox((8, 0), (48, 16)),  # 92 truck
-    HitBox((0, 0), (56, 16)),  # 93 truck
+    HitBox((8, 0), (56, 8)),  # 91 truck
+    HitBox((8, 0), (48, 8)),  # 92 truck
+    HitBox((0, 0), (56, 8)),  # 93 truck
     HitBox((0, 0), (64, 24)),  # 94 fence
     HitBox((0, 0), (64, 64)),  # 95 fence
     HitBox((0, 0), (64, 24)),  # 96 fence
@@ -1428,10 +1465,16 @@ tileCenters = {}
 for i in range(97):
     tileCenters[i] = -9999999
 
-playerHeightOffset = 1
+playerHeightOffset = 1  # to center it on the player (ended up not really mattering)
 tileCenters[2]  = 84 - playerHeightOffset  # large/tall fence top
+tileCenters[7]  = 96 - playerHeightOffset  # tall light
 tileCenters[9]  = 96 - playerHeightOffset  # wooden barrel
 tileCenters[22] = 32 - playerHeightOffset  # wooden barrel
+tileCenters[55] = 32 - playerHeightOffset  # tree+fence
+tileCenters[56] = 32 - playerHeightOffset  # tree+fence
+tileCenters[83] = 64 - playerHeightOffset  # truck top
+tileCenters[84] = 64 - playerHeightOffset  # truck top
+tileCenters[85] = 64 - playerHeightOffset  # truck top
 
 # creating the ground tiles (tile 8 is the origonal)
 groundTiles = [
@@ -1451,15 +1494,6 @@ pygame.draw.circle(bulletSprite, (255, 125, 0), (3, 3), 2)
 weaponSprites = Sprites.LoadSpritesheet(pygame.image.load("playerWeaponSpriteSheet.png"), (16, 16))
 weaponSprites = Sprites.ScaleSprites(weaponSprites, (64, 64))
 
-"""
-playerWeapons = {
-            "AR-15"        : Weapon("AR-15", 0.2, 100, 2, Bullet, 15, 2, Friendlies.friendly, AmoType.Rifle, maxLife=0.5, accuracy=0.1, selfKnockback=150, knockback=300, burst=1),
-            "Glock-19"     : Weapon("Glock-19", -0.1, 75, 2.5, Bullet, 12, 1.5, Friendlies.friendly, AmoType.Pistol, maxLife=0.5, accuracy=0, selfKnockback=75, knockback=200, burst=1),
-            "50-BMG"       : Weapon("50-BMG", -1.5, 125, 10, Bullet, 4, 3, Friendlies.friendly, AmoType.LargeRifle, maxLife=1, accuracy=0, selfKnockback=750, knockback=400, burst=1),
-            "Remington-570": Weapon("Remington-570", -0.5, 75, 1, Bullet, 6, 3.5, Friendlies.friendly, AmoType.Shotgun, maxLife=0.2, accuracy=0.45, selfKnockback=125, knockback=300, burst=7),
-            "MP-5"         : Weapon("MP-5", 0.055, 75, 0.75, Bullet, 65, 3, Friendlies.friendly, AmoType.Rifle, maxLife=0.45, accuracy=0.2, selfKnockback=25, knockback=125, burst=1)
-}
-"""
 playerWeapons = {
             "SAR"           : Weapon("SAR"           , -0.25, 100, 1.5 , Bullet, 12, 2   , Friendlies.friendly, AmoType.Rifle  , maxLife=0.5 , accuracy=0.1 , selfKnockback=150, knockback=300, burst=1),
             "Pipe Pistol"   : Weapon("Pipe Pistol"   , -0.2 , 75 , 1   , Bullet, 6 , 1.75, Friendlies.friendly, AmoType.Pistol , maxLife=0.5 , accuracy=0   , selfKnockback=75 , knockback=200, burst=1),
@@ -1555,19 +1589,8 @@ amoCrateDrops = [
     [DropTypes.Amo, AmoType.Shotgun, (5, 14), 6.25],
 ]
 
-# all the solid objects
-#solidObjects = [
-#    ShadowedObject([64*3, 64*9], [64, 64], sprite=tiles[1], renderShadows=True),
-#    ShadowedObject([64*6, 64*12], [64, 64], sprite=tiles[1], renderShadows=True),
-#    ShadowedObject(((21-2)*64, (13-4)*64), [64*2, 64*4], renderObject=False, collideable=False),
-#]tileMap
-
-# all the light sources around the map
-#lights = [
-#    #Light(125, (225, 225, 175), 1, False, (500, 250))
-#    Light(200, (225, 225, 175), 1, False, (64*5 + 32, 64*5 + 32)),  # top left lanturn
-#    Light(200, (225, 225, 175), 1, False, (64*17 + 32, 64*14 + 32))  # top left lanturn
-#]
+# UI elements
+dashText = UI.TextRenderer(15, "pixel2.ttf", "DASH", (60, 20), (225, 0, 0), centered=True)  #UI.DrawText(screen, 15, "pixel2.ttf", f"DASH", (60, 20), (225, 0, 0), centered=True)
 
 # loading the first level
 tileMap=None
@@ -1579,6 +1602,13 @@ LoadLevel("ShooterL1")  # loads all the data from the save files for the level
 screenSize = (1200, 750)
 screen = pygame.display.set_mode(screenSize, flags=pygame.RESIZABLE)
 
+zoom = 1  # the zoom amount
+zoomedScreenSize = screenSize
+zoomDisplay = pygame.Surface(screenSize)
+
+# creating the light map
+lightMap = pygame.Surface(screenSize)
+
 # creating an event manager
 events = Events.Manager()
 
@@ -1588,11 +1618,21 @@ fps = 0
 desiredTime = 0  # 0 is unlimited, 1 / fps limits it to the fps desired
 lastCheckedFps = time.time()
 
-"""
+
+setup = 0
+updating = 0
+gettingRenders = 0
+rendering = 0
+renderingSurfs = 0
+renderingUI = 0
+frame = 0
+
+
+#"""
 lowest = 0
 heighest = 0
 lastReset = time.time()
-"""
+#"""
 
 # =============================================================================
 #                               Main Game Loop
@@ -1603,26 +1643,40 @@ lastReset = time.time()
 while True:
     # the start of the frame
     frameStart = time.time()
+    t1 = time.time()
     
     # getting the size of the screen (incase it got scaled or something)
     screenSize = screen.get_size()
 
     # updating the events
     events.GetEvents()
+
+    # updating the zooming
+    zoom = max(min(zoom + events.scrollSpeed/50, 2.5), 0.5)
+    zoomedScreenSize = (screenSize[0]//zoom, screenSize[1]//zoom)
+    newCamPos = [cameraPos[0]-zoomedScreenSize[0]//2, cameraPos[1]-zoomedScreenSize[1]//2]
+    if events.scrollSpeed:  # only updating it when necessary
+        zoomDisplay = pygame.Surface(zoomedScreenSize)
+        
+        # creating the light map
+        lightMap = pygame.Surface(zoomedScreenSize)
+        #lightMap.fill((10, 45, 20))  # good for night vision
     
     # updaing the fps counter
     if time.time() - lastCheckedFps > 0.1:
         lastCheckedFps = time.time()
         fps = round(1 / dt)
 
-    """
+    #"""
     if time.time() - lastReset > 1:
         lowest = fps
         heighest = fps
         lastReset = time.time()
     lowest = min(lowest, fps)
     heighest = max(heighest, fps)
-    """
+    #"""
+
+    t2 = time.time()
     
     # updating the player
     player.Update(events, dt)
@@ -1640,21 +1694,13 @@ while True:
     # updating the camera position
     cameraPos = [Mix(cameraPos[0], player.position[0], dt * 5), Mix(cameraPos[1], player.position[1], dt * 5)]
 
-    # drawing the base layer ground
-    screen.fill((0, 0, 0))  # the base layer
+    t3 = time.time()
 
-    # rendering the gravel ground
-    topLeft = [cameraPos[0] - screenSize[0]//2, cameraPos[1] - screenSize[1]//2]
-    topLeftStart = [-(topLeft[0] % tileMap.tileSize), -(topLeft[1] % tileMap.tileSize)]
-    dstAcross = [math.ceil(screenSize[0]/tileMap.tileSize), math.ceil(screenSize[1]/tileMap.tileSize)]
-    bx, by = topLeft[0]//tileMap.tileSize, topLeft[1]//tileMap.tileSize
-    for x in range(dstAcross[0]+1):
-        for y in range(dstAcross[1]+1):
-            screen.blit(groundTiles[round((x+y+bx+by)%4)], [round(topLeftStart[0]+x*64), round(topLeftStart[1]+y*64)])
-    
-    # creating the light map
-    lightMap = pygame.Surface(screenSize)
-    #lightMap.fill((10, 45, 20))  # good for night vision
+    # drawing the base layer ground
+    lightMap.fill((0, 0, 0))
+
+    zoomDisplay.fill((0, 0, 0))  # the base layer
+    RenderGround(zoomDisplay)  # rendering the ground
     
     # rendering all the lights
     for light in lights:
@@ -1664,25 +1710,25 @@ while True:
     depthMap = []
 
     # drawing the rest of the ground
-    depthMap += tileMap.RenderDepth(screen, cameraPos, screenSize, tileCenters)
-
+    depthMap += tileMap.RenderDepth(zoomDisplay, cameraPos, zoomedScreenSize, tileCenters)
+    
     # rendering the solid objects
     for obj in solidObjects:
         #obj.Render(screen)
         depth = obj.pos[1]
-        depthMap.append([obj, depth, screen])
+        depthMap.append([obj, depth, zoomDisplay])
     
     # rendering the player
     #player.Render(screen, lightMap)
     depth = player.position[1]
-    depthMap.append([player, depth, screen, lightMap])
+    depthMap.append([player, depth, zoomDisplay, lightMap])
 
     # rendering the mobs
     aliveEnemies = []
     for enemy in mobs:
         #enemy.Render(screen, lightMap)
         depth = enemy.position[1]
-        depthMap.append([enemy, depth, screen, lightMap])
+        depthMap.append([enemy, depth, zoomDisplay, lightMap])
         if enemy.health > 0:
             aliveEnemies.append(enemy)
         else:  # killing the enemy
@@ -1697,19 +1743,29 @@ while True:
                 player.projectiles.append(spark)
     mobs = aliveEnemies
 
+    t4 = time.time()
+
     # sorting and rendering the objects
+    ps1 = time.time()
     sortedDepthMap = sorted(depthMap, key=lambda args: args[1])
+    ps2 = time.time()
     for obj, depth, *args in sortedDepthMap:
         obj.Render(*args)
-
+    
+    t5 = time.time()
+    
     # rendering the light map
-    screen.blit(lightMap, [0, 0], special_flags=pygame.BLEND_MULT)
+    zoomDisplay.blit(lightMap, [0, 0], special_flags=pygame.BLEND_MULT)
+
+    screen.blit(pygame.transform.scale(zoomDisplay, screenSize), (0, 0))
+
+    t6 = time.time()
 
     # rendering the dash cooldown
     pygame.draw.rect(screen, (255, 255, 0), [8, 8, 104, 24])
     pygame.draw.rect(screen, (225, 255, 225), [10, 10, 100, 20])
     pygame.draw.rect(screen, (75, 75, 75), [10, 10, 100*(1 - min((time.time() - player.lastDashed) / player.stats["dashCooldown"], 1)), 20])
-    UI.DrawText(screen, 15, "pixel2.ttf", f"DASH", (60, 20), (225, 0, 0), centered=True)
+    dashText.Render(screen)
 
     # displaying the name of the held weapon
     UI.DrawText(screen, 30, "pixel2.ttf", player.weaponInventory[player.weaponSlot].name, (10, 40), (255, 0, 0))
@@ -1721,10 +1777,61 @@ while True:
 
     # rendering the fps counter
     UI.DrawText(screen, 15, "pixel2.ttf", f"FPS {fps}", (screenSize[0] - 90, 10), (255, 0, 0))
-    #UI.DrawText(screen, 15, "pixel2.ttf", f"FPS {lowest} - {heighest}", (screenSize[0] - 120, 10), (255, 0, 0))
+    UI.DrawText(screen, 15, "pixel2.ttf", f"FPS {lowest} - {heighest}", (screenSize[0] - 120, 40), (255, 0, 0))
 
     # updating the display
     pygame.display.update()
+
+    t7 = time.time()
+
+    frame += 1
+
+    setup += t2-t1
+    updating += t3-t2
+    gettingRenders += t4-t3
+    rendering += t5-t4
+    renderingSurfs += t6-t5
+    renderingUI += t7-t6
+
+    print(f"Setup          : {setup/frame}sec | {1/(setup/frame)}fps")
+    print(f"Updating       : {updating/frame}sec | {1/(updating/frame)}fps")
+    print(f"Getting Renders: {gettingRenders/frame}sec | {1/(gettingRenders/frame)}fps")
+    print(f"Rendering      : {rendering/frame}sec | {1/(rendering/frame)}fps")
+    print(f"Rendering Surfs: {renderingSurfs/frame}sec | {1/(renderingSurfs/frame)}fps")
+    print(f"Rendering UI   : {renderingUI/frame}sec | {1/(renderingUI/frame)}fps")
+    print(f"Sorting        : {ps2-ps1}sec | {1/(ps2-ps1)}fps")
+    print("----------------------------------------------------")
+
+    """
+        Improved cashes (removed re-defining surfaces, and needless colorkey sets); a minimum of slight improvement across all fields with some have upwards of a 2.3x increase
+    Setup          : 0.00017508892107453162 sec | 5711.38364359628 fps
+    Updating       : 0.00024933454050010895 sec | 4010.6757691662983 fps
+    Getting Renders: 0.0009695519489121153 sec | 1031.404249274161 fps
+    Rendering      : 0.0011935437501347556 sec | 837.8410928691104 fps
+    Rendering Surfs: 0.002111574884746496 sec | 473.58017336906073 fps
+    Rendering UI   : 0.009136134370231376 sec | 109.4554829730109 fps
+
+    0.01383522841 sec
+    = 72.2792548388 fps (+7 fps from origonal)
+
+        Cashing light map; should be better, it didn't add any complexity and reduced creating surfaces
+    Setup          : 0.0002801260357240756sec | 3569.8216962060637fps
+    Getting Renders: 0.0010056728502466363sec | 994.359149453776fps
+
+        Cashing the zoom surface (+2x for setup)
+    Setup          : 0.0002018943800196529sec | 4953.0848748868475fps
+
+        Origonal
+    Setup          : 0.0004060645110456604  sec | 2462.6628843404487 fps
+    Updating       : 0.00030634021618992924 sec | 3264.3445004948535 fps
+    Getting Renders: 0.0009710687897804025  sec | 1029.7931624660082 fps
+    Rendering      : 0.002204267008889264   sec | 453.6655477613407  fps
+    Rendering Surfs: 0.0021211278946214134  sec | 471.4472911019275  fps
+    Rendering UI   : 0.009226923016899658   sec | 108.37849174296139 fps
+
+    0.01523579143 sec
+    = 65.6349231738 fps
+    """
 
     # forcing the framerate to certain amounts
     dif = max(desiredTime - (time.time() - frameStart), 0)
