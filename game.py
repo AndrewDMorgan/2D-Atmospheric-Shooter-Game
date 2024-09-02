@@ -4,17 +4,20 @@ from enum import Enum
 
 pygame.init()
 
+# =============================================================================
+#                               Dev Stuff
+#=============================================================================
+
+
+DEV_MODE = True
+
 """
 TODO
-
-Fix phasing into lamp posts (check the center of the player for point collision with the hitboxes)
-
-Shorten the player&enemy hitboxes so that they can go up to wall without needing a weird hitbox. This'll also fix other problems
 
 Store all areas that have a light rendered
     Use that to only render areas that are visable
 
-In the sub ticks for bullets, add a check for objects
+Stop the player from being able to shoot through thin walls
 
 """
 
@@ -57,7 +60,7 @@ class DropTypes (Enum):
 
 
 # =============================================================================
-#                               Map Objects
+#                               Collisions
 #=============================================================================
 
 
@@ -74,21 +77,37 @@ class HitBox:
         yValid = self.pos[1] < position[1] and self.pos[1]+self.size[1] > position[1]
         return xValid and yValid
     
+    
+    # currently un-used
     # checking for a collision using lines
-    def CollideLineHorizontal(self, xSmall: int, xLarge: int, y: int) -> None:  # sees if a horizontal line collides with the hitbox
+    def CollideLineHorizontal(self, xSmall: int, xLarge: int, y: int) -> bool:  # sees if a horizontal line collides with the hitbox
         # check that at least 1 verticle line is inbetween the input points
         y1, y2 = self.pos[1], self.pos[1]+self.size[1]
         if y < y1 or y > y2: return  # not alligned vertically
         x1, x2 = self.pos[0], self.pos[0]+self.size[0]
         return (x1 > xSmall and x1 < xLarge) or (x2 > xSmall and x2 < xLarge) or (x1 < xSmall and x2 > xLarge)
     
+    # currently un-used
     # checking for a collision using lines
-    def CollideLineVerticle(self, ySmall: int, yLarge: int, x: int) -> None:  # sees if a verticle line collides with the hitbox
+    def CollideLineVerticle(self, ySmall: int, yLarge: int, x: int) -> bool:  # sees if a verticle line collides with the hitbox
         # check that at least 1 horizontal line is inbetween the input points
         x1, x2 = self.pos[0], self.pos[0]+self.size[0]
         if x < x1 or x > x2: return  # not alligned horizontally
         y1, y2 = self.pos[1], self.pos[1]+self.size[1]
         return (y1 > ySmall and y1 < yLarge) or (y2 > ySmall and y2 < yLarge) or (y1 < ySmall and y2 > yLarge)
+
+    # checks collision from a hitbox to a hitbox
+    def HitBoxCollision(self, box: list) -> bool:
+        return (
+                # checking box-box collision
+            ((self.pos[0] <= box[0] + box[2]) and
+            (self.pos[0] + self.size[0] >= box[0]) and
+            (self.pos[1] <= box[1] + box[3]) and
+            (self.pos[1] + self.size[1] >= box[1]))# or
+                # checking the center point
+            #((center[0] > self.pos[0] and center[0] < self.pos[0]+self.size[0]) and
+            #(center[1] > self.pos[1] and center[1] < self.pos[1]+self.size[1]))
+        )
 
 
 # =============================================================================
@@ -106,10 +125,12 @@ class RadialLight:
         self.renderShadows = renderShadows
 
         self.lightFeild = pygame.Surface([self.radius*2, self.radius*2])
+        self.lightFeild = self.lightFeild.convert()
 
         # generating the radia light
         newRadius = radius//step
         self.surface = pygame.Surface([newRadius*2, newRadius*2])
+        self.surface = self.surface.convert()
         for r in range(newRadius, 0, -1):
             brightness = pow(1-r/newRadius, 2)
             pygame.draw.circle(self.surface, (color[0] * brightness, color[1] * brightness, color[2] * brightness), [newRadius, newRadius], r)
@@ -117,6 +138,11 @@ class RadialLight:
     
     # rendering the radial light
     def Render(self, lightMap: pygame.Surface, pos: tuple) -> None:
+        # checking if the object is within range
+        screenDst = (zoomedScreenSize[0]*0.5)**2 + (zoomedScreenSize[1]*0.5)**2
+        lightDst = (cameraPos[0]-pos[0])**2 + (cameraPos[1]-pos[1])**2 - self.radius*self.radius*1.5
+        if lightDst > screenDst: return  # ending it and not rendering the object sense it's out of range of the camera
+        
         transPos = [pos[0] - cameraPos[0] + zoomedScreenSize[0]//2, pos[1] - cameraPos[1] + zoomedScreenSize[1]//2]
         if not self.renderShadows:
             lightMap.blit(self.surface, [round(transPos[0] - self.radius), round(transPos[1] - self.radius)], special_flags=pygame.BLEND_ADD)
@@ -138,6 +164,11 @@ class Light (RadialLight):
         super().Render(lightMap, self.pos)
 
 
+# =============================================================================
+#                               Map Objects
+#=============================================================================
+
+
 # a solid object that casts shadows
 class ShadowedObject:
     def __init__(self, pos: tuple, size: tuple, hitBox: HitBox, sprite: pygame.Surface=None, renderShadows: bool=True, renderObject: bool=True, collideable: bool=True) -> None:
@@ -153,6 +184,7 @@ class ShadowedObject:
         self.sprite = sprite
         if not self.sprite:
             self.sprite = pygame.Surface(self.size)
+            self.sprite = self.sprite.convert()
             self.sprite.fill((0, 225, 0))
         
         # getting the length from center to the outside of the object
@@ -163,7 +195,7 @@ class ShadowedObject:
     def CheckCollision(self, point: tuple) -> bool:
         #return self.collideable and point[0] >= self.pos[0] and point[0] <= self.pos[0] + self.size[0] and point[1] >= self.pos[1] and point[1] <= self.pos[1] + self.size[1]
         return self.collideable and self.hitBox.Collide([point[0]-self.pos[0], point[1]-self.pos[1]])
-
+    
     # rendering the object
     def Render(self, screen: pygame.Surface) -> None:
         if not self.renderObject: return  # in case it's for a hitbox and not a shadow
@@ -247,6 +279,7 @@ class ShadowedObject:
         
         # rendering the polygon
         surf = pygame.Surface((surfSize, surfSize))
+        surf = surf.convert()
         surf.fill((255, 255, 255))
         surf.set_colorkey((255, 255, 255))
         pygame.draw.polygon(surf, (0, 0, 0), points)
@@ -261,7 +294,7 @@ class ShadowedObject:
 
 # a basic entity class
 class Entity:
-    def __init__(self, sprite: pygame.Surface, position: list, velocity: list, collision: bool=False, light: object=None) -> None:
+    def __init__(self, sprite: pygame.Surface, position: list, velocity: list, collision: bool=False, hitBoxSize=[], hitBoxShift=[0,0], light: object=None) -> None:
         self.position = position
         self.velocity = velocity
         self.sprite = sprite
@@ -270,78 +303,168 @@ class Entity:
     
         self.spriteSize = self.sprite.get_size()
 
+        self.hitBoxShift = hitBoxShift
+        self.hitBoxSize = hitBoxSize
+        if not hitBoxSize:
+            self.hitBoxSize = self.spriteSize
+
+        #self.hitBox = HitBox([self.position[0]-self.spriteSize[0]//2, self.position[1]-self.spriteSize[1]//2], self.spriteSize)
+
     # updating the entity
     def Update(self, events: Events.Manager, dt: float, collidables: list=[]) -> None:
+        global hitBoxesToRender
+        
         # moving the entity
-        newX = self.position[0] + self.velocity[0] * dt
-        newY = self.position[1] + self.velocity[1] * dt
+        deltaX = self.velocity[0] * dt
+        deltaY = self.velocity[1] * dt
+        newX = self.position[0] + deltaX
+        newY = self.position[1] + deltaY
 
         # checking for collision
         spriteSize = [self.spriteSize[0]//2, self.spriteSize[1]//2]
-        if self.collision:  # add tile collision here
-            xValid, yValid = True, True
-            
-            # checking horizontal movement collision on the tile map
-            hitboxes = [
-                [newX-spriteSize[0], self.position[1]-spriteSize[1]],  # top left
-                [newX+spriteSize[0], self.position[1]+spriteSize[1]],  # top right
-                [newX-spriteSize[0], self.position[1]+spriteSize[1]],  # bot left
-                [newX+spriteSize[0], self.position[1]-spriteSize[1]],  # bot right
-            ]
-            for x, y in hitboxes:
-                hitbox = GetTileMapCollisionHitbox([x, y])  # getting the hitbox
+        if self.collision:  # checking for collision with tiles (huge pain)
+            # finding all the tiles that are touched
+            hitBoxSize = [self.hitBoxSize[0]//2, self.hitBoxSize[1]//2]
 
-                # getting relative coords for the tile
-                basePointX = (x // tileMap.tileSize) * tileMap.tileSize
-                basePointY = (y // tileMap.tileSize) * tileMap.tileSize
-                if hitbox:  # checking for collisions based on all possible lines
-                    if hitbox.CollideLineHorizontal(newX-spriteSize[0]-basePointX, newX+spriteSize[0]-basePointX, y-basePointY):
-                        xValid = False
-                    if hitbox.CollideLineVerticle(self.position[1]-spriteSize[1]-basePointY, self.position[1]+spriteSize[1]-basePointY, x-basePointX):
-                        xValid = False
-            
-            # checking vertical movement collision on the tile map
-            hitboxes = [
-                [self.position[0]-spriteSize[0], newY-spriteSize[1]],  # top left
-                [self.position[0]+spriteSize[0], newY+spriteSize[1]],  # top right
-                [self.position[0]-spriteSize[0], newY+spriteSize[1]],  # bot left
-                [self.position[0]+spriteSize[0], newY-spriteSize[1]],  # bot right
-            ]
-            for x, y in hitboxes:
-                hitbox = GetTileMapCollisionHitbox([x, y])  # getting the hitbox
+            baseXL = (self.position[0] + self.hitBoxShift[0] - hitBoxSize[0])//tileMap.tileSize*tileMap.tileSize
+            baseYL = (self.position[1] + self.hitBoxShift[1] - hitBoxSize[1])//tileMap.tileSize*tileMap.tileSize
+            baseNewXL = (newX + self.hitBoxShift[0] - hitBoxSize[0])//tileMap.tileSize*tileMap.tileSize
+            baseNewYL = (newY + self.hitBoxShift[1] - hitBoxSize[1])//tileMap.tileSize*tileMap.tileSize
 
-                # getting relative coords for the tile
-                basePointX = (x // tileMap.tileSize) * tileMap.tileSize
-                basePointY = (y // tileMap.tileSize) * tileMap.tileSize
-                if hitbox:  # checking for collisions based on all possible lines
-                    if hitbox.CollideLineHorizontal(self.position[0]-spriteSize[0]-basePointX, self.position[0]+spriteSize[0]-basePointX, y-basePointY):
-                        yValid = False
-                    if hitbox.CollideLineVerticle(newY-spriteSize[1]-basePointY, newY+spriteSize[1]-basePointY, x-basePointX):
-                        yValid = False
-
-            for obj in solidObjects + collidables:
-                # checking for collisions on different parts of the entity
-                if obj.CheckCollision([newX-spriteSize[0], self.position[1]+spriteSize[1]]): xValid = False
-                if obj.CheckCollision([newX-spriteSize[0], self.position[1]-spriteSize[1]]): xValid = False
-                if obj.CheckCollision([newX+spriteSize[0], self.position[1]-spriteSize[1]]): xValid = False
-                if obj.CheckCollision([newX+spriteSize[0], self.position[1]+spriteSize[1]]): xValid = False
-                
-                if obj.CheckCollision([self.position[0]-spriteSize[0], newY+spriteSize[1]]): yValid = False
-                if obj.CheckCollision([self.position[0]-spriteSize[0], newY-spriteSize[1]]): yValid = False
-                if obj.CheckCollision([self.position[0]+spriteSize[0], newY-spriteSize[1]]): yValid = False
-                if obj.CheckCollision([self.position[0]+spriteSize[0], newY+spriteSize[1]]): yValid = False
+            baseXB = (self.position[0] + self.hitBoxShift[0] + hitBoxSize[0])//tileMap.tileSize*tileMap.tileSize
+            baseYB = (self.position[1] + self.hitBoxShift[1] + hitBoxSize[1])//tileMap.tileSize*tileMap.tileSize
+            baseNewXB = (newX + self.hitBoxShift[0] + hitBoxSize[0])//tileMap.tileSize*tileMap.tileSize
+            baseNewYB = (newY + self.hitBoxShift[1] + hitBoxSize[1])//tileMap.tileSize*tileMap.tileSize
             
+            # stretching the hitboxes to the new position
+            posX, posY = self.position[0], self.position[1]
+            if deltaX < 0: posX += deltaX
+            if deltaY < 0: posY += deltaY
+            selfHitBoxX = self.hitBox =  HitBox([posX             + self.hitBoxShift[0] - hitBoxSize[0], self.position[1] + self.hitBoxShift[1] - hitBoxSize[1]], [self.hitBoxSize[0] + abs(deltaX), self.hitBoxSize[1]              ])
+            selfHitBoxY = self.hitBox =  HitBox([self.position[0] + self.hitBoxShift[0] - hitBoxSize[0], posY             + self.hitBoxShift[1] - hitBoxSize[1]], [self.hitBoxSize[0]              , self.hitBoxSize[1] + abs(deltaY)])
+            selfHitBoxXY = self.hitBox = HitBox([posX             + self.hitBoxShift[0] - hitBoxSize[0], posY             + self.hitBoxShift[1] - hitBoxSize[1]], [self.hitBoxSize[0] + abs(deltaX), self.hitBoxSize[1] + abs(deltaY)])
+
+            # checking collisions for new x
+            xBoxes = []
+            ts = 1#tileMap.tileSize
+            hitBoxes = GetTileMapCollisionHitbox([baseNewXL, baseYL])
+            if hitBoxes:
+                for hitBox in hitBoxes:
+                    trueBox = [hitBox.pos[0] + (baseNewXL//ts)*ts, hitBox.pos[1] + (baseYL//ts)*ts, hitBox.size[0], hitBox.size[1]]
+                    xBoxes.append(trueBox)
+            hitBoxes = GetTileMapCollisionHitbox([baseNewXL, baseYB])
+            if hitBoxes:
+                for hitBox in hitBoxes:
+                    trueBox = [hitBox.pos[0] + (baseNewXL//ts)*ts, hitBox.pos[1] + (baseYB//ts)*ts, hitBox.size[0], hitBox.size[1]]
+                    xBoxes.append(trueBox)
+            hitBoxes = GetTileMapCollisionHitbox([baseNewXB, baseYL])
+            if hitBoxes:
+                for hitBox in hitBoxes:
+                    trueBox = [hitBox.pos[0] + (baseNewXB//ts)*ts, hitBox.pos[1] + (baseYL//ts)*ts, hitBox.size[0], hitBox.size[1]]
+                    xBoxes.append(trueBox)
+            hitBoxes = GetTileMapCollisionHitbox([baseNewXB, baseYB])
+            if hitBoxes:
+                for hitBox in hitBoxes:
+                    trueBox = [hitBox.pos[0] + (baseNewXB//ts)*ts, hitBox.pos[1] + (baseYB//ts)*ts, hitBox.size[0], hitBox.size[1]]
+                    xBoxes.append(trueBox)
+            
+            # checking collisions for new y
+            yBoxes = []
+            hitBoxes = GetTileMapCollisionHitbox([baseXL, baseNewYL])
+            if hitBoxes:
+                for hitBox in hitBoxes:
+                    trueBox = [hitBox.pos[0] + (baseXL//ts)*ts, hitBox.pos[1] + (baseNewYL//ts)*ts, hitBox.size[0], hitBox.size[1]]
+                    yBoxes.append(trueBox)
+            hitBoxes = GetTileMapCollisionHitbox([baseXL, baseNewYB])
+            if hitBoxes:
+                for hitBox in hitBoxes:
+                    trueBox = [hitBox.pos[0] + (baseXL//ts)*ts, hitBox.pos[1] + (baseNewYB//ts)*ts, hitBox.size[0], hitBox.size[1]]
+                    yBoxes.append(trueBox)
+            hitBoxes = GetTileMapCollisionHitbox([baseXB, baseNewYL])
+            if hitBoxes:
+                for hitBox in hitBoxes:
+                    trueBox = [hitBox.pos[0] + (baseXB//ts)*ts, hitBox.pos[1] + (baseNewYL//ts)*ts, hitBox.size[0], hitBox.size[1]]
+                    yBoxes.append(trueBox)
+            hitBoxes = GetTileMapCollisionHitbox([baseXB, baseNewYB])
+            if hitBoxes:
+                for hitBox in hitBoxes:
+                    trueBox = [hitBox.pos[0] + (baseXB//ts)*ts, hitBox.pos[1] + (baseNewYB//ts)*ts, hitBox.size[0], hitBox.size[1]]
+                    yBoxes.append(trueBox)
+
+            # checking collisions for new xy
+            xyBoxes = []
+            hitBoxes = GetTileMapCollisionHitbox([baseNewXL, baseNewYL])
+            if hitBoxes:
+                for hitBox in hitBoxes:
+                    trueBox = [hitBox.pos[0] + (baseNewXL//ts)*ts, hitBox.pos[1] + (baseNewYL//ts)*ts, hitBox.size[0], hitBox.size[1]]
+                    xyBoxes.append(trueBox)
+            hitBoxes = GetTileMapCollisionHitbox([baseNewXL, baseNewYB])
+            if hitBoxes:
+                for hitBox in hitBoxes:
+                    trueBox = [hitBox.pos[0] + (baseNewXL//ts)*ts, hitBox.pos[1] + (baseNewYB//ts)*ts, hitBox.size[0], hitBox.size[1]]
+                    xyBoxes.append(trueBox)
+            hitBoxes = GetTileMapCollisionHitbox([baseNewXB, baseNewYL])
+            if hitBoxes:
+                for hitBox in hitBoxes:
+                    trueBox = [hitBox.pos[0] + (baseNewXB//ts)*ts, hitBox.pos[1] + (baseNewYL//ts)*ts, hitBox.size[0], hitBox.size[1]]
+                    xyBoxes.append(trueBox)
+            hitBoxes = GetTileMapCollisionHitbox([baseNewXB, baseNewYB])
+            if hitBoxes:
+                for hitBox in hitBoxes:
+                    trueBox = [hitBox.pos[0] + (baseNewXB//ts)*ts, hitBox.pos[1] + (baseNewYB//ts)*ts, hitBox.size[0], hitBox.size[1]]
+                    xyBoxes.append(trueBox)
+
+            if DEV_MODE:
+                hitBoxesToRender.append([self.position[0]+self.hitBoxShift[0]-hitBoxSize[0]                , self.position[1] + self.hitBoxShift[1] - hitBoxSize[1], self.hitBoxSize[0], self.hitBoxSize[1]])
+                hitBoxesToRender += xBoxes
+                hitBoxesToRender += yBoxes
+                hitBoxesToRender += xyBoxes
+
+            # analyzing the results
+            xValid = sum(selfHitBoxX.HitBoxCollision(box) for box in xBoxes) == 0
+            yValid = sum(selfHitBoxY.HitBoxCollision(box) for box in yBoxes) == 0
+            collideXY = sum(selfHitBoxXY.HitBoxCollision(box) for box in xyBoxes) == 0
+            if (xValid and yValid) and (not collideXY): xValid, yValid = False, False
+
+            # checking collisions for objects
+            for obj in solidObjects + collidables:  # update this for the new hitbox shape?
+                if obj.hitBox:  # making sure it actually has a hitbox, otherwise it's not collideable
+                    # checking for collisions on different parts of the entity
+                    if obj.CheckCollision([newX + self.hitBoxShift[0] - hitBoxSize[0], self.position[1] + self.hitBoxShift[1] + hitBoxSize[1]]): xValid = False
+                    if obj.CheckCollision([newX + self.hitBoxShift[0] - hitBoxSize[0], self.position[1] + self.hitBoxShift[1] - hitBoxSize[1]]): xValid = False
+                    if obj.CheckCollision([newX + self.hitBoxShift[0] + hitBoxSize[0], self.position[1] + self.hitBoxShift[1] - hitBoxSize[1]]): xValid = False
+                    if obj.CheckCollision([newX + self.hitBoxShift[0] + hitBoxSize[0], self.position[1] + self.hitBoxShift[1] + hitBoxSize[1]]): xValid = False
+                    
+                    if obj.CheckCollision([self.position[0] + self.hitBoxShift[0] - hitBoxSize[0], newY + self.hitBoxShift[1] + hitBoxSize[1]]): yValid = False
+                    if obj.CheckCollision([self.position[0] + self.hitBoxShift[0] - hitBoxSize[0], newY + self.hitBoxShift[1] - hitBoxSize[1]]): yValid = False
+                    if obj.CheckCollision([self.position[0] + self.hitBoxShift[0] + hitBoxSize[0], newY + self.hitBoxShift[1] - hitBoxSize[1]]): yValid = False
+                    if obj.CheckCollision([self.position[0] + self.hitBoxShift[0] + hitBoxSize[0], newY + self.hitBoxShift[1] + hitBoxSize[1]]): yValid = False
+
+                    if xValid and yValid:
+                        if obj.CheckCollision([newX + self.hitBoxShift[0] - hitBoxSize[0], newY + self.hitBoxShift[1] + hitBoxSize[1]]): xValid, yValid = False, False
+                        if obj.CheckCollision([newX + self.hitBoxShift[0] - hitBoxSize[0], newY + self.hitBoxShift[1] - hitBoxSize[1]]): xValid, yValid = False, False
+                        if obj.CheckCollision([newX + self.hitBoxShift[0] + hitBoxSize[0], newY + self.hitBoxShift[1] - hitBoxSize[1]]): xValid, yValid = False, False
+                        if obj.CheckCollision([newX + self.hitBoxShift[0] + hitBoxSize[0], newY + self.hitBoxShift[1] + hitBoxSize[1]]): xValid, yValid = False, False
+
             # setting the position
-            if xValid and yValid: self.position = [newX, newY]
-            elif xValid: self.position = [newX, self.position[1]]
-            elif yValid: self.position = [self.position[0], newY]
+            if xValid and yValid:
+                self.position = [newX, newY]
+            elif xValid:
+                self.position = [newX, self.position[1]]
+                self.velocity[1] = 0
+            elif yValid:
+                self.position = [self.position[0], newY]
+                self.velocity[0] = 0
+            else:
+                self.velocity[0] = 0
+                self.velocity[1] = 0
         else: self.position = [newX, newY]
     
     # checks collision with a point
     def CheckCollision(self, point: tuple) -> bool:
         pos = [self.position[0]-self.spriteSize[0]//2, self.position[1]-self.spriteSize[1]//2]
         return point[0] >= pos[0] and point[0] <= pos[0]+self.spriteSize[0] and point[1] >= pos[1] and point[1] <= pos[1]+self.spriteSize[1]
-
+    
     # rendering the entity
     def Render(self, screen: pygame.Surface, lightMap: pygame.Surface, lightOffset: tuple=(0, 0)) -> None:
         # rendering the sprite
@@ -369,7 +492,7 @@ class Enemy (Entity):
         self.enemyAnimation = Animator.LoadAnimation(sprites, EnemyAnimationStates.walkingLeft, animation, self.GetAnimationState)
         
         # initializing the parent classes stuff
-        super().__init__(self.enemyAnimation.GetCurrentSprite(), position, [0, 0], light=light, collision=True)
+        super().__init__(self.enemyAnimation.GetCurrentSprite(), position, [0, 0], light=light, collision=True, hitBoxSize=[48, 24], hitBoxShift=[0, 32])
         
         # initializing the parameters for the enemy
         self.damage = damage
@@ -486,7 +609,9 @@ class Bullet (Particle):
         # initializing the parent classes stuff
         #super().__init__(bulletSprite, position, velocity, maxLife, light=bulletLight, name="bullet")
         # without bullet lights
-        super().__init__(pygame.transform.scale(bulletSprite, (12, 12)), position, velocity, maxLife, light=None, name="bullet")
+        light = None
+        if DEV_MODE: light = bulletLight
+        super().__init__(pygame.transform.scale(bulletSprite, (12, 12)), position, velocity, maxLife, light=light, name="bullet")
         self.collided = False
         self.damage = damage
         self.firer = firer
@@ -506,6 +631,12 @@ class Bullet (Particle):
         if self.firer != Friendlies.enemy:
             for step in range(subSteps):
                 pos = [positionBefore[0] + dif[0]*step, positionBefore[1] + dif[1]*step]
+
+                gridPosition = tileMap.GetGridPosition(pos)  # checking for collision with amo crates and barrels
+                if tileMap.map[gridPosition[1]][gridPosition[0]] in [29, 22]:
+                    self.collided = True
+                    return  # ending the loop
+
                 for enemy in mobs:
                     if enemy.CheckCollision(pos):
                         self.collided = True
@@ -520,6 +651,12 @@ class Bullet (Particle):
         if self.firer != Friendlies.friendly:
             for step in range(subSteps):
                 pos = [positionBefore[0] + dif[0]*step, positionBefore[1] + dif[1]*step]
+
+                gridPosition = tileMap.GetGridPosition(pos)  # checking for collision with amo crates and barrels
+                if tileMap.map[gridPosition[1]][gridPosition[0]] in [29, 22]:
+                    self.collided = True
+                    return  # ending the loop
+
                 if player.CheckCollision(pos):
                     self.collided = True
                     player.Damage(self.damage)
@@ -535,10 +672,10 @@ class Bullet (Particle):
     def Kill(self) -> None:
         gridPosition = tileMap.GetGridPosition(self.position)
         tile = tileMap.GetTileNumber(gridPosition)
-        if tile == 9:  # checking if the bullet hit a wooden barrel
+        if tile == 22:  # checking if the bullet hit a wooden barrel
             # breaking the barrel
-            tileMap.map[gridPosition[1]][gridPosition[0]] = 0
-            tileMap.map[gridPosition[1]+1][gridPosition[0]] = 30
+            tileMap.map[gridPosition[1]][gridPosition[0]] = 30
+            tileMap.map[gridPosition[1]-1][gridPosition[0]] = 0
 
             # dropping loot
             DropLoot(woodenBarrelDrops, self.position)
@@ -594,6 +731,7 @@ class ItemSlot:
         self.itemType = itemType
         self.amount = amount
         self.surface = pygame.Surface((56, 56))  # (self.sprite.get_size())
+        self.surface = self.surface.convert()
         
         self.highlighted = False  # for when an item is selected or equiped
         
@@ -641,6 +779,7 @@ class CraftingRecipe:
 
         # pre generate the crafting inventory tile
         self.surface = pygame.Surface((56, 56))
+        self.surface = self.surface.convert()
         self.CashRender()
     
     # checks for a collision with the box
@@ -698,7 +837,7 @@ class Player (Entity):
         self.lastAnimationState = PlayerStates.walkingRight
         
         # initializing the parent classes stuff
-        super().__init__(self.playerAnimation.GetCurrentSprite(), [64*25//2, 64*25//2 - 128], [0, 0], light=light, collision=True)
+        super().__init__(self.playerAnimation.GetCurrentSprite(), [64*25//2, 64*25//2 - 128], [0, 0], light=light, collision=True, hitBoxSize=[54, 24], hitBoxShift=[0, 32])
 
         # stats about the player
         self.stats = {
@@ -761,6 +900,7 @@ class Player (Entity):
         self.rightPadding = 0  # padding for the position of the players inventory
         self.craftButton = UI.Button((235, 235), (80, 30), uiColorPallete, "Craft", textSize=20, font="pixel2.ttf", transparentColor=(254, 254, 254))
         self.craftIngredientCash = pygame.Surface((265, 215))
+        self.craftIngredientCash = self.craftIngredientCash.convert()
         self.craftIngredientCash.set_colorkey((0, 0, 0))
 
     # adds a new piece of armor to the players inventory
@@ -1040,14 +1180,14 @@ class Player (Entity):
         # updating the projectiles
         aliveProjectiles = []
         for projectile in self.projectiles:
-            if projectile.name == "spark": projectile.Update(events, dt)
-            else: projectile.Update(events, dt)
+            projectile.Update(events, dt)
 
             # checking if the projectile is still alive
             alive = time.time() - projectile.lifeTime < projectile.maxLife
             alive = alive and ((projectile.name == "bullet" and not projectile.collided) or projectile.name != "bullet")
             if (projectile.name != "spark" or projectile.collision):
-                for obj in solidObjects:  # add tile collision here
+                # checking for collisions with tiles
+                for obj in solidObjects:
                     alive = alive and not obj.CheckCollision(projectile.position)
                 alive = alive and not TileMapCollision(projectile.position)
             if alive:
@@ -1071,7 +1211,7 @@ class Player (Entity):
             projectile.Render(screen, lightMap)
         
         # rendering the stuff in the parent class
-        super().Render(screen, lightMap, (0, 16))
+        super().Render(screen, lightMap, (0, 32))
 
         # rendering the weapon
         weapon = self.weaponInventory[self.weaponSlot]
@@ -1200,7 +1340,7 @@ class Weapon:
             length = math.sqrt(dif[0]*dif[0] + dif[1]*dif[1])
             normalized = [dif[0] / length, dif[1] / length]
             velocity = [normalized[0] * 10, normalized[1] * 10]
-            projectile = self.projectileObject([entity.position[0] + velocity[0], entity.position[1] + velocity[1]], [velocity[0] * self.speed, velocity[1] * self.speed], self.damage, self.maxLife, self.firer, self.knockback)
+            projectile = self.projectileObject([entity.position[0] + velocity[0]*1, entity.position[1] + velocity[1]*1], [velocity[0] * self.speed, velocity[1] * self.speed], self.damage, self.maxLife, self.firer, self.knockback)
             projectiles.append(projectile)
 
             # knockback
@@ -1225,7 +1365,7 @@ class Weapon:
             length = math.sqrt(dif[0]*dif[0] + dif[1]*dif[1])
             normalized = [dif[0] / length, dif[1] / length]
             velocity = [normalized[0] * 10, normalized[1] * 10]
-            projectile = self.projectileObject([player.position[0] + velocity[0], player.position[1] + velocity[1]], [velocity[0] * self.speed, velocity[1] * self.speed], self.damage, self.maxLife, self.firer, self.knockback)
+            projectile = self.projectileObject([player.position[0] + velocity[0]*1, player.position[1] + velocity[1]*1], [velocity[0] * self.speed, velocity[1] * self.speed], self.damage, self.maxLife, self.firer, self.knockback)
             projectiles.append(projectile)
 
             # knockback
@@ -1296,7 +1436,7 @@ def TileMapCollision(pos: tuple) -> bool:
         #tilePosition = (round(pos[0] // tileMap.tileSize), round(pos[1] // tileMap.tileSize))
         subPosition = (pos[0] % tileMap.tileSize, pos[1] % tileMap.tileSize)
         hitBox = tileHitBoxes[solidTiles.index(tile)]
-        return hitBox.Collide(subPosition)
+        return max(box.Collide(subPosition) for box in hitBox)
     else: return False
 
 
@@ -1321,14 +1461,17 @@ def LoadLevel(levelName: str) -> None:
 
     # loading the solid objects
     for obj in levelFile["Objects"]:
+        hitBox = None
+        if obj["tileNumber"] in solidTiles:
+            hitBox = tileHitBoxes[solidTiles.index(obj["tileNumber"])]
         solidObjects.append(ShadowedObject(
             obj["position"],
             obj["size"],
-            tileHitBoxes[obj["tileNumber"]],
+            hitBox,
             sprite=tiles[obj["tileNumber"]],
             renderShadows=obj["renderShadows"],
             renderObject=obj["renderSelf"],
-            collideable=obj["collideable"]
+            collideable=obj["collideable"],
         ))
 
     # loading the lights
@@ -1372,6 +1515,19 @@ settings = {
 #                               General Variables
 #=============================================================================
 
+# creating the screen
+screenSize = (1200, 750)
+oldScreenSize = (1200, 750)
+screen = pygame.display.set_mode(screenSize, flags=pygame.RESIZABLE)  #  | pygame.HWSURFACE
+
+zoom = 1  # the zoom amount
+zoomedScreenSize = screenSize
+zoomDisplay = pygame.Surface(screenSize)
+zoomDisplay = zoomDisplay.convert()
+
+# creating the light map
+lightMap = pygame.Surface(screenSize)
+lightMap = lightMap.convert()
 
 # creating some lights
 light = RadialLight(240, (225, 225, 225), 1)
@@ -1388,76 +1544,80 @@ tiles = Sprites.ScaleSprites(Sprites.LoadSpritesheet(img, (16, 16)), (64, 64))
 #tileMap = TileMap.TileMap("shooterExampleLevel.txt", tiles, 64)
 tiles.insert(0, TileMap.blankTile)
 
-solidTiles = [1, 2, 3, 4, 5, 6, 7, 9, 11, 12, 13, 14, 16, 18, 19, 20, 25, 26, 27, 28, 29, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 44, 45, 46, 49, 50, 52, 53, 54, 55, 56, 57, 59, 60, 61, 62, 63, 64, 68, 70, 71, 72, 78, 79, 80, 83, 84, 85, 86, 87, 88, 91, 92, 93, 94, 95, 96]
+solidTiles = [1, 2, 3, 4, 5, 6, 10, 11, 12, 13, 14, 16, 18, 19, 20, 21, 22, 25, 26, 27, 28, 29, 32, 33, 34, 36, 37, 38, 39, 41, 42, 44, 45, 46, 47, 49, 50, 51, 52, 53, 54, 55, 56, 59, 60, 61, 62, 63, 64, 65, 68, 69, 70, 71, 72, 78, 79, 80, 83, 84, 85, 86, 87, 88, 91, 92, 93, 94, 95, 96]
 tileHitBoxes = [
-    HitBox((0, 0), (64, 24)),  # 1
-    HitBox((0, 46), (64, 18)),  # 2
-    HitBox((0, 0), (12, 64)),  # 3
-    HitBox((0, 0), (12, 64)),  # 4
-    HitBox((52, 0), (12, 64)),  # 5
-    HitBox((52, 0), (12, 64)),  # 6
-    HitBox((20, 62), (24, 2)),  # 7
-    HitBox((8, 52), (48, 12)),  # 9 top of wooden barrel
-    HitBox((0, 0), (12, 64)),  # 11
-    HitBox((0, 0), (12, 64)),  # 12
-    HitBox((52, 0), (12, 64)),  # 13
-    HitBox((52, 0), (12, 64)),  # 14
-    HitBox((8, 20), (48, 44)),  # 16 top of oil barrel
-    HitBox((8, 28), (44, 12)),  # 18 amo crate
-    HitBox((0, 0), (64, 24)),  # 19
-    HitBox((0, 0), (64, 24)),  # 20
-    HitBox((0, 0), (64, 64)),  # 25 top of storage container
-    HitBox((0, 0), (64, 64)),  # 26 top of storage container
-    HitBox((0, 0), (64, 24)),  # 27
-    HitBox((0, 0), (64, 24)),  # 28
-    HitBox((8, 28), (44, 12)),  # 29 amo crate w/ block under
-    HitBox((8, 20), (48, 44)),  # 32 top of empty oil barrel
-    HitBox((0, 0), (64, 64)),  # 33 mid section of storage container
-    HitBox((0, 0), (64, 64)),  # 34 mid section of storage container
-    HitBox((8, 48), (48, 16)),  # 35 top of lanturn on box
-    HitBox((0, 0), (64, 64)),  # 36 top of house
-    HitBox((0, 0), (64, 64)),  # 37 top of house
-    HitBox((0, 0), (64, 64)),  # 38 top of house
-    HitBox((8, 28), (44, 12)),  # 39 opened amo crate
-    HitBox((8, 48), (48, 16)),  # 40 top of box
-    HitBox((0, 0), (64, 64)),  # 41 top of storage container door
-    HitBox((0, 0), (64, 64)),  # 42 top of storage container door
-    HitBox((0, 0), (64, 64)),  # 44 top mid of house
-    HitBox((0, 0), (64, 64)),  # 45 top mid of house
-    HitBox((0, 0), (64, 64)),  # 46 top mid of house
-    HitBox((0, 0), (64, 32)),  # 49 bottom of storage container door
-    HitBox((0, 0), (64, 32)),  # 50 bottom of storage container door
-    HitBox((0, 0), (64, 64)),  # 52 top roof of house
-    HitBox((0, 0), (64, 64)),  # 53 top roof of house
-    HitBox((0, 0), (64, 64)),  # 54 top roof of house
-    HitBox((0, 32), (64, 32)),  # 55 tree top
-    HitBox((0, 32), (64, 32)),  # 56 tree top
-    HitBox((8, 48), (48, 16)),  # 57 top of water barrel
-    HitBox((0, 0), (64, 24)),  # 59 top of metal crate
-    HitBox((0, 0), (64, 44)),  # 60 roof of house
-    HitBox((0, 0), (64, 44)),  # 61 roof of house
-    HitBox((0, 0), (64, 44)),  # 62 roof of house
-    HitBox((0, 0), (64, 64)),  # 63 tree mid
-    HitBox((0, 0), (64, 64)),  # 64 tree mid
-    HitBox((4, 0), (16, 24)),  # 68 bottom of house
-    HitBox((44, 0), (16, 24)),  # 70 bottom of house
-    HitBox((0, 0), (64, 24)),  # 71 tree bottom
-    HitBox((0, 0), (64, 24)),  # 72 tree bottom
-    HitBox((52, 0), (12, 64)),  # 78 fence
-    HitBox((0, 0), (12, 64)),  # 79 fence
-    HitBox((0, 0), (64, 24)),  # 80 fence
-    HitBox((12, 62), (52, 2)),  # 83 truck
-    HitBox((0, 62), (64, 2)),  # 84 truck
-    HitBox((0, 62), (56, 2)),  # 85 truck
-    HitBox((0, 0), (64, 24)),  # 86 fence
-    HitBox((0, 0), (64, 64)),  # 87 fence
-    HitBox((0, 0), (64, 64)),  # 88 fence
-    HitBox((8, 0), (56, 8)),  # 91 truck
-    HitBox((8, 0), (48, 8)),  # 92 truck
-    HitBox((0, 0), (56, 8)),  # 93 truck
-    HitBox((0, 0), (64, 24)),  # 94 fence
-    HitBox((0, 0), (64, 64)),  # 95 fence
-    HitBox((0, 0), (64, 24)),  # 96 fence
+    [HitBox((0, 0), (64, 64))],  # 1
+    [HitBox((0, 46), (64, 18))],  # 2
+    [HitBox((0, 46), (12, 18))],  # 3
+    [HitBox((0, 0), (12, 64))],  # 4
+    [HitBox((52, 46), (12, 18))],  # 5
+    [HitBox((52, 0), (12, 64))],  # 6
+    #[HitBox((20, 62), (24, 2))],  # 7
+   #[HitBox((8, 52), (48, 12))],  # 9 top of wooden barrel
+    [HitBox((0, 0), (64, 64))],  # 10
+    [HitBox((0, 0), (12, 64))],  # 11
+    [HitBox((0, 0), (12, 64))],  # 12
+    [HitBox((52, 0), (12, 64))],  # 13
+    [HitBox((52, 0), (12, 64))],  # 14
+    [HitBox((8, 20), (48, 44))],  # 16 top of oil barrel
+    [HitBox((8, 28), (44, 12))],  # 18 amo crate
+    [HitBox((0, 0), (64, 24))],  # 19
+    [HitBox((0, 0), (64, 24))],  # 20
+    [HitBox((20, 40), (24, 24))],  # 21  tall lamp
+    [HitBox((0, 0), (64, 64))],  # 22  wooden barrel
+    [HitBox((0, 0), (64, 64))],  # 25 top of storage container
+    [HitBox((0, 0), (64, 64))],  # 26 top of storage container
+    [HitBox((0, 32), (64, 32))],  # 27
+    [HitBox((0, 32), (64, 32))],  # 28
+    [HitBox((8, 28), (44, 12))],  # 29 amo crate w/ block under
+    [HitBox((8, 20), (48, 44))],  # 32 top of empty oil barrel
+    [HitBox((0, 0), (64, 64))],  # 33 mid section of storage container
+    [HitBox((0, 0), (64, 64))],  # 34 mid section of storage container
+    [HitBox((0, 0), (64, 64))],  # 36 top of house
+    [HitBox((0, 0), (64, 64))],  # 37 top of house
+    [HitBox((0, 0), (64, 64))],  # 38 top of house
+    [HitBox((8, 28), (44, 12))],  # 39 opened amo crate
+    [HitBox((0, 0), (64, 64))],  # 41 top of storage container door
+    [HitBox((0, 0), (64, 64))],  # 42 top of storage container door
+    [HitBox((0, 0), (64, 64))],  # 44 top mid of house
+    [HitBox((0, 0), (64, 64))],  # 45 top mid of house
+    [HitBox((0, 0), (64, 64))],  # 46 top mid of house
+    [HitBox((8, 16), (48, 44))],  # 47 top of box
+    [HitBox((0, 0), (64, 64))],  # 49 bottom of storage container door
+    [HitBox((0, 0), (64, 64))],  # 50 bottom of storage container door
+    [HitBox((8, 16), (48, 44))],  # 51 top of lanturn on box
+    [HitBox((0, 0), (64, 64))],  # 52 top roof of house
+    [HitBox((0, 0), (64, 64))],  # 53 top roof of house
+    [HitBox((0, 0), (64, 64))],  # 54 top roof of house
+    [HitBox((0, 32), (64, 32))],  # 55 tree top
+    [HitBox((0, 32), (64, 32))],  # 56 tree top
+    [HitBox((0, 0), (64, 64))],  # 59 top of metal crate
+    [HitBox((0, 0), (64, 64))],  # 60 roof of house
+    [HitBox((0, 0), (64, 64))],  # 61 roof of house
+    [HitBox((0, 0), (64, 64))],  # 62 roof of house
+    [HitBox((0, 0), (64, 64))],  # 63 tree mid
+    [HitBox((0, 0), (64, 64))],  # 64 tree mid
+    [HitBox((8, 16), (48, 44))],  # 65(57) top of water barrel
+    [HitBox((4, 0), (16, 64)), HitBox((20, 0), (44, 32))],  # 68 bottom of house
+    [HitBox((0, 0), (64, 32))],  # 69 bottom of house
+    [HitBox((44, 0), (16, 64)), HitBox((0, 0), (44, 32))],  # 70 bottom of house
+    [HitBox((0, 0), (64, 64))],  # 71 tree bottom
+    [HitBox((0, 0), (64, 64))],  # 72 tree bottom
+    [HitBox((52, 0), (12, 64))],  # 78 fence
+    [HitBox((0, 0), (12, 64))],  # 79 fence
+    [HitBox((0, 0), (64, 64))],  # 80 fence
+    [HitBox((12, 62), (52, 2))],  # 83 truck
+    [HitBox((0, 62), (64, 2))],  # 84 truck
+    [HitBox((0, 62), (56, 2))],  # 85 truck
+    [HitBox((0, 0), (64, 64))],  # 86 fence
+    [HitBox((0, 0), (64, 64))],  # 87 fence
+    [HitBox((0, 0), (64, 64))],  # 88 fence
+    [HitBox((8, 0), (56, 52))],  # 91 truck
+    [HitBox((0, 0), (64, 52))],  # 92 truck
+    [HitBox((0, 0), (56, 52))],  # 93 truck
+    [HitBox((0, 0), (64, 64))],  # 94 fence
+    [HitBox((0, 0), (64, 64))],  # 95 fence
+    [HitBox((0, 0), (64, 64))],  # 96 fence
 ]
 
 # the centers of the tiles so they can be sorted by depth
@@ -1467,14 +1627,27 @@ for i in range(97):
 
 playerHeightOffset = 1  # to center it on the player (ended up not really mattering)
 tileCenters[2]  = 84 - playerHeightOffset  # large/tall fence top
+
+tileCenters[3]  = 84 - playerHeightOffset  # large/tall fence top
+tileCenters[5]  = 84 - playerHeightOffset  # large/tall fence top
+
 tileCenters[7]  = 96 - playerHeightOffset  # tall light
+tileCenters[21]  = 32 - playerHeightOffset  # tall light
 tileCenters[9]  = 96 - playerHeightOffset  # wooden barrel
 tileCenters[22] = 32 - playerHeightOffset  # wooden barrel
+tileCenters[27]  = 32 - playerHeightOffset  # crafting bench
+tileCenters[28]  = 32 - playerHeightOffset  # crafting bench
 tileCenters[55] = 32 - playerHeightOffset  # tree+fence
 tileCenters[56] = 32 - playerHeightOffset  # tree+fence
 tileCenters[83] = 64 - playerHeightOffset  # truck top
 tileCenters[84] = 64 - playerHeightOffset  # truck top
 tileCenters[85] = 64 - playerHeightOffset  # truck top
+tileCenters[35]  = 96 - playerHeightOffset  # lamp box top
+tileCenters[51]  = 32 - playerHeightOffset  # lamp box bottom
+tileCenters[40]  = 96 - playerHeightOffset  # box top
+tileCenters[47]  = 32 - playerHeightOffset  # box bottom
+tileCenters[57]  = 96 - playerHeightOffset  # water box top
+tileCenters[65]  = 32 - playerHeightOffset  # water box bottom
 
 # creating the ground tiles (tile 8 is the origonal)
 groundTiles = [
@@ -1486,6 +1659,7 @@ groundTiles = [
 
 # creating a sprite for the bullet
 bulletSprite = pygame.Surface([6, 6])
+bulletSprite = bulletSprite.convert()
 bulletSprite.set_colorkey((0, 0, 0))
 pygame.draw.circle(bulletSprite, (125, 62, 0), (3, 3), 3)
 pygame.draw.circle(bulletSprite, (255, 125, 0), (3, 3), 2)
@@ -1494,7 +1668,7 @@ pygame.draw.circle(bulletSprite, (255, 125, 0), (3, 3), 2)
 weaponSprites = Sprites.LoadSpritesheet(pygame.image.load("playerWeaponSpriteSheet.png"), (16, 16))
 weaponSprites = Sprites.ScaleSprites(weaponSprites, (64, 64))
 
-playerWeapons = {
+playerWeapons = {  # -0.25
             "SAR"           : Weapon("SAR"           , -0.25, 100, 1.5 , Bullet, 12, 2   , Friendlies.friendly, AmoType.Rifle  , maxLife=0.5 , accuracy=0.1 , selfKnockback=150, knockback=300, burst=1),
             "Pipe Pistol"   : Weapon("Pipe Pistol"   , -0.2 , 75 , 1   , Bullet, 6 , 1.75, Friendlies.friendly, AmoType.Pistol , maxLife=0.5 , accuracy=0   , selfKnockback=75 , knockback=200, burst=1),
             "Pipe Shotty"   : Weapon("Pipe Shotty"   , -0.75, 75 , 0.5 , Bullet, 2 , 3.5 , Friendlies.friendly, AmoType.Shotgun, maxLife=0.2 , accuracy=0.55, selfKnockback=125, knockback=300, burst=7),
@@ -1517,6 +1691,7 @@ playerArmors = {
 
 # creating a sprite for a spark
 sparkSprite = pygame.Surface((12, 12))
+sparkSprite = sparkSprite.convert()
 sparkSprite.set_colorkey((0, 0, 0))
 pygame.draw.circle(sparkSprite, (255, 200, 0), (6, 6), 6)
 
@@ -1598,17 +1773,6 @@ solidObjects=None
 lights=None
 LoadLevel("ShooterL1")  # loads all the data from the save files for the level
 
-# creating the screen
-screenSize = (1200, 750)
-screen = pygame.display.set_mode(screenSize, flags=pygame.RESIZABLE)
-
-zoom = 1  # the zoom amount
-zoomedScreenSize = screenSize
-zoomDisplay = pygame.Surface(screenSize)
-
-# creating the light map
-lightMap = pygame.Surface(screenSize)
-
 # creating an event manager
 events = Events.Manager()
 
@@ -1627,7 +1791,7 @@ renderingSurfs = 0
 renderingUI = 0
 frame = 0
 
-
+hitBoxesToRender = []
 #"""
 lowest = 0
 heighest = 0
@@ -1645,7 +1809,10 @@ while True:
     frameStart = time.time()
     t1 = time.time()
     
+    hitBoxesToRender = []  # dev stuff
+    
     # getting the size of the screen (incase it got scaled or something)
+    oldScreenSize = screenSize
     screenSize = screen.get_size()
 
     # updating the events
@@ -1654,13 +1821,13 @@ while True:
     # updating the zooming
     zoom = max(min(zoom + events.scrollSpeed/50, 2.5), 0.5)
     zoomedScreenSize = (screenSize[0]//zoom, screenSize[1]//zoom)
-    newCamPos = [cameraPos[0]-zoomedScreenSize[0]//2, cameraPos[1]-zoomedScreenSize[1]//2]
-    if events.scrollSpeed:  # only updating it when necessary
+    if events.scrollSpeed or screenSize != oldScreenSize:  # only updating it when necessary
+        # creating the cash surfaces
         zoomDisplay = pygame.Surface(zoomedScreenSize)
-        
-        # creating the light map
         lightMap = pygame.Surface(zoomedScreenSize)
-        #lightMap.fill((10, 45, 20))  # good for night vision
+
+        zoomDisplay = zoomDisplay.convert()
+        lightMap = lightMap.convert()
     
     # updaing the fps counter
     if time.time() - lastCheckedFps > 0.1:
@@ -1691,13 +1858,18 @@ while True:
             mob = Enemy(zombieSprites, [random.randint(100, 1100), random.randint(100, 650)], 1, 35, random.randint(1, 5), zombieDrops, weapon=mobWeapons[["Pipe Pistol", "Pipe Shotty"][random.randint(0, 1)]].Copy())
             mobs.append(mob)
     
+    if ord("p") in events.events:  # a button to spawn zombies
+        for i in range(random.randint(5, 9)):
+            mob = Enemy(zombieSprites, [random.randint(100, 1100), random.randint(100, 650)], 1, 35, random.randint(1, 5), zombieDrops, weapon=mobWeapons[["Pipe Pistol", "Pipe Shotty"][random.randint(0, 1)]].Copy())
+            mobs.append(mob)
+
     # updating the camera position
     cameraPos = [Mix(cameraPos[0], player.position[0], dt * 5), Mix(cameraPos[1], player.position[1], dt * 5)]
 
     t3 = time.time()
 
     # drawing the base layer ground
-    lightMap.fill((0, 0, 0))
+    lightMap.fill((0, 0, 0))  # (10, 45, 20) bad night vision color
 
     zoomDisplay.fill((0, 0, 0))  # the base layer
     RenderGround(zoomDisplay)  # rendering the ground
@@ -1757,6 +1929,11 @@ while True:
     # rendering the light map
     zoomDisplay.blit(lightMap, [0, 0], special_flags=pygame.BLEND_MULT)
 
+    # rendering hitboxes in dev mode
+    if DEV_MODE:
+        for box in hitBoxesToRender:
+            pygame.draw.rect(zoomDisplay, (255, 255, 255), [box[0]-cameraPos[0]+zoomedScreenSize[0]//2, box[1]-cameraPos[1]+zoomedScreenSize[1]//2, box[2], box[3]], width=2)
+
     screen.blit(pygame.transform.scale(zoomDisplay, screenSize), (0, 0))
 
     t6 = time.time()
@@ -1778,29 +1955,31 @@ while True:
     # rendering the fps counter
     UI.DrawText(screen, 15, "pixel2.ttf", f"FPS {fps}", (screenSize[0] - 90, 10), (255, 0, 0))
     UI.DrawText(screen, 15, "pixel2.ttf", f"FPS {lowest} - {heighest}", (screenSize[0] - 120, 40), (255, 0, 0))
-
+    
     # updating the display
     pygame.display.update()
 
-    t7 = time.time()
+    if DEV_MODE:
+        t7 = time.time()
 
-    frame += 1
+        frame += 1
 
-    setup += t2-t1
-    updating += t3-t2
-    gettingRenders += t4-t3
-    rendering += t5-t4
-    renderingSurfs += t6-t5
-    renderingUI += t7-t6
+        setup += t2-t1
+        updating += t3-t2
+        gettingRenders += t4-t3
+        rendering += t5-t4
+        renderingSurfs += t6-t5
+        renderingUI += t7-t6
 
-    print(f"Setup          : {setup/frame}sec | {1/(setup/frame)}fps")
-    print(f"Updating       : {updating/frame}sec | {1/(updating/frame)}fps")
-    print(f"Getting Renders: {gettingRenders/frame}sec | {1/(gettingRenders/frame)}fps")
-    print(f"Rendering      : {rendering/frame}sec | {1/(rendering/frame)}fps")
-    print(f"Rendering Surfs: {renderingSurfs/frame}sec | {1/(renderingSurfs/frame)}fps")
-    print(f"Rendering UI   : {renderingUI/frame}sec | {1/(renderingUI/frame)}fps")
-    print(f"Sorting        : {ps2-ps1}sec | {1/(ps2-ps1)}fps")
-    print("----------------------------------------------------")
+        print(f"Setup          : {setup/frame}sec | {1/(setup/frame)}fps")
+        print(f"Updating       : {updating/frame}sec | {1/(updating/frame)}fps")
+        print(f"Getting Renders: {gettingRenders/frame}sec | {1/(gettingRenders/frame)}fps")
+        print(f"Rendering      : {rendering/frame}sec | {1/(rendering/frame)}fps")
+        print(f"Rendering Surfs: {renderingSurfs/frame}sec | {1/(renderingSurfs/frame)}fps")
+        print(f"Rendering UI   : {renderingUI/frame}sec | {1/(renderingUI/frame)}fps")
+        print(f"Sorting        : {ps2-ps1}sec | {1/(ps2-ps1)}fps")
+        print(f"FPS            : {1/((setup+updating+gettingRenders+rendering+renderingSurfs+renderingUI)/frame)}")
+        print("----------------------------------------------------")
 
     """
         Improved cashes (removed re-defining surfaces, and needless colorkey sets); a minimum of slight improvement across all fields with some have upwards of a 2.3x increase

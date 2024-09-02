@@ -1,12 +1,12 @@
 {
     "Objects": [
         {
-            "position": [200, 200],
+            "position": [192, 256],
             "size": [64, 64],
             "tileNumber": 1,
             "renderShadows": true,
-            "renderSelf": true,
-            "collideable": true
+            "renderSelf": false,
+            "collideable": false
         },
         {
             "position": [768, 192],
@@ -19,11 +19,32 @@
     ],
     "Lights": [
         {
-            "radius": 200,
+            "radius": 220,
             "color": [225, 225, 175],
             "stepSize": 1,
             "renderShadows": false,
-            "position": [0, 0]
+            "position": [96, 544]
+        },
+        {
+            "radius": 220,
+            "color": [225, 225, 175],
+            "stepSize": 1,
+            "renderShadows": false,
+            "position": [1056, 640]
+        },
+        {
+            "radius": 220,
+            "color": [225, 225, 175],
+            "stepSize": 1,
+            "renderShadows": false,
+            "position": [1376, 2048]
+        },
+        {
+            "radius": 220,
+            "color": [225, 225, 175],
+            "stepSize": 1,
+            "renderShadows": false,
+            "position": [992, 1760]
         }
     ]
 }
