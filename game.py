@@ -1,29 +1,64 @@
-from Pygen import UI, Events, TileMap, Sprites, Animator
+from Pygen import UI, Events, TileMap, Sprites, Animator, Sounds
 import pygame, time, math, random, json
 from enum import Enum
 
+# initializing sound and pygame
+Sounds.preInit(maxChannels=8)
 pygame.init()
+
+# supposidly this improves performance. I'm not entirely sure about that but it definitly won't hurt it
+pygame.event.set_allowed([pygame.QUIT, pygame.KEYDOWN, pygame.KEYUP, pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP, pygame.TEXTINPUT])
 
 # =============================================================================
 #                               Dev Stuff
 #=============================================================================
 
 
-DEV_MODE = True
+DEV_MODE = False
 
 """
+Don't use - It seems using rects in update won't provide a lot of help considering the amount of movement and it will add insane complexity
+
 TODO
-
-Store all areas that have a light rendered
-    Use that to only render areas that are visable
-
+    - BUGS -
 Stop the player from being able to shoot through thin walls
+
+
+    - PERFORMANCE -
+ * figure out why the updating phase is taking so much time
+
+
+    - GAME PROGRESSION -
+Polish player walking animation (1 pixel of movement isn't really enough. Maybe move the legs a bit more? idk)
+
+Improve mob ai (they shouldn't move into the player but get near them and flank and walk around them while firing)
+Retexture mobs (make them people)
+
+Add particles to various things
+    - bullets impacting objects
+    - barrels breaking
+    - amo creates opening
+    - maybe for an entity being shot? idk
+    - ambient partcles?
+    - walking particles?
+    - smoke particles from firing?
+
+
+    - SOUND -
+Channel 0 - player shooting
+Channel 1 - mobs shooting
 
 """
 
 # =============================================================================
 #                               Enums
 #=============================================================================
+
+
+# the different sound channel types
+class SoundChannels (Enum):
+    playerShooting = 0
+    mobsShooting = 1
 
 
 # the players animation states
@@ -103,10 +138,7 @@ class HitBox:
             ((self.pos[0] <= box[0] + box[2]) and
             (self.pos[0] + self.size[0] >= box[0]) and
             (self.pos[1] <= box[1] + box[3]) and
-            (self.pos[1] + self.size[1] >= box[1]))# or
-                # checking the center point
-            #((center[0] > self.pos[0] and center[0] < self.pos[0]+self.size[0]) and
-            #(center[1] > self.pos[1] and center[1] < self.pos[1]+self.size[1]))
+            (self.pos[1] + self.size[1] >= box[1]))
         )
 
 
@@ -143,16 +175,18 @@ class RadialLight:
         lightDst = (cameraPos[0]-pos[0])**2 + (cameraPos[1]-pos[1])**2 - self.radius*self.radius*1.5
         if lightDst > screenDst: return  # ending it and not rendering the object sense it's out of range of the camera
         
-        transPos = [pos[0] - cameraPos[0] + zoomedScreenSize[0]//2, pos[1] - cameraPos[1] + zoomedScreenSize[1]//2]
+        transPos = [round(pos[0] - cameraPos[0] + zoomedScreenSize[0]//2 - self.radius), round(pos[1] - cameraPos[1] + zoomedScreenSize[1]//2 - self.radius)]
+        litAreas.append([transPos[0], transPos[1], self.radius*2, self.radius*2])
+
         if not self.renderShadows:
-            lightMap.blit(self.surface, [round(transPos[0] - self.radius), round(transPos[1] - self.radius)], special_flags=pygame.BLEND_ADD)
+            lightMap.blit(self.surface, [transPos[0], transPos[1]], special_flags=pygame.BLEND_ADD)
             return
         
         # rendering the light
         self.lightFeild.blit(self.surface, [0, 0])
         for obj in solidObjects:
             obj.RenderShadow(self.lightFeild, pos, self.radius)
-        lightMap.blit(self.lightFeild, [round(transPos[0] - self.radius), round(transPos[1] - self.radius)], special_flags=pygame.BLEND_ADD)
+        lightMap.blit(self.lightFeild, [transPos[0], transPos[1]], special_flags=pygame.BLEND_ADD)
 
 
 # a light with a fixed position
@@ -465,16 +499,22 @@ class Entity:
         pos = [self.position[0]-self.spriteSize[0]//2, self.position[1]-self.spriteSize[1]//2]
         return point[0] >= pos[0] and point[0] <= pos[0]+self.spriteSize[0] and point[1] >= pos[1] and point[1] <= pos[1]+self.spriteSize[1]
     
-    # rendering the entity
-    def Render(self, screen: pygame.Surface, lightMap: pygame.Surface, lightOffset: tuple=(0, 0)) -> None:
-        # rendering the sprite
-        translatedPosition = [self.position[0] - cameraPos[0] + zoomedScreenSize[0]//2, self.position[1] - cameraPos[1] + zoomedScreenSize[1]//2]
-        width, height = self.sprite.get_size()
-        screen.blit(self.sprite, [round(translatedPosition[0]-width//2), round(translatedPosition[1]-height//2)])
-
+    # rendering the lighting
+    def RenderLighting(self, lightMap: pygame.Surface, lightOffset: tuple=[0,0]) -> None:
         # rendering the light if there is one
         if self.light:
             self.light.Render(lightMap, [round(self.position[0]+lightOffset[0]), round(self.position[1]+lightOffset[1])])
+
+    # rendering the entity
+    def Render(self, screen: pygame.Surface) -> None:
+        # getting the position
+        translatedPosition = [self.position[0] - cameraPos[0] + zoomedScreenSize[0]//2, self.position[1] - cameraPos[1] + zoomedScreenSize[1]//2]
+        width, height = self.spriteSize
+
+        # making sure the object is in range
+        if not(translatedPosition[0] < -width or translatedPosition[0] > zoomedScreenSize[0]+width or translatedPosition[1] < -height or translatedPosition[1] > zoomedScreenSize[1]+height):
+            # rendering the sprite
+            screen.blit(self.sprite, [round(translatedPosition[0]-width//2), round(translatedPosition[1]-height//2)])
     
     # runs when the entity is killed
     def Kill(self) -> None:
@@ -547,10 +587,9 @@ class Enemy (Entity):
         # dropping items
         DropLoot(self.drops, self.position)
 
-    # renders the mob
-    def Render(self, screen: pygame.Surface, lightMap: pygame.Surface) -> None:
-        self.sprite = self.enemyAnimation.GetCurrentSprite()
-        super().Render(screen, lightMap)
+    # renders all the lighting
+    def RenderLighting(self, lightMap: pygame.Surface) -> None:
+        super().RenderLighting(lightMap)
 
         # checking for muzzel flash if the mob has a weapon
         if self.weapon:
@@ -559,6 +598,11 @@ class Enemy (Entity):
                     muzzleFlash.Render(lightMap, [round(self.position[0]), round(self.position[1] + self.spriteSize[1]//2)])
                 else:
                     muzzleFlash.Render(lightMap, [round(self.position[0] + self.spriteSize[0]), round(self.position[1] + self.spriteSize[1]//2)])
+
+    # renders the mob
+    def Render(self, screen: pygame.Surface, lightMap: pygame.Surface) -> None:
+        self.sprite = self.enemyAnimation.GetCurrentSprite()
+        super().Render(screen)
 
 
 # a particle class
@@ -593,6 +637,8 @@ class DroppedItem (Particle):
             # giving the item to the player
             if self.dropType == DropTypes.Amo:
                 player.amoInventory[self.dropName] += self.amount
+                amoText.text = f"{player.weaponInventory[player.weaponSlot].capacityLeft} - {player.amoInventory[player.weaponInventory[player.weaponSlot].amoType]}"
+                amoText.Update()
             elif self.dropType == DropTypes.Part:
                 player.AddPart(self.dropName, self.amount)
                 #player.partInventory[self.dropName] += self.amount
@@ -716,6 +762,9 @@ class SparksParticle (Particle):
                 player.exp += self.value  # increasing the players exp count
                 player.lastDashed -= self.value * 0.25  # making the dash cooldown go quicker to reward quick flowier fighting hopefully to better allow that style of playing
                 player.health = min(player.health + self.value * 0.5, 100)
+                
+                healthText.text = f"{player.health}hp"
+                healthText.Update()
 
 
 # =============================================================================
@@ -1020,6 +1069,9 @@ class Player (Entity):
         self.health = max(self.health - finalDamage, 0)
         if self.health <= 0:
             pass  # kill the player
+        
+        healthText.text = f"{self.health}hp"
+        healthText.Update()
     
     # updating the player
     def Update(self, events: Events.Manager, dt: float) -> None:
@@ -1057,6 +1109,11 @@ class Player (Entity):
             if str(i) in events.typed:
                 if i <= len(self.weaponInventory):
                     self.weaponSlot = i - 1
+                    weaponNameText.text = self.weaponInventory[self.weaponSlot].name
+                    weaponNameText.Update()
+                    amoText.text = f"{player.weaponInventory[player.weaponSlot].capacityLeft} - {player.amoInventory[player.weaponInventory[player.weaponSlot].amoType]}"
+                    amoText.Update()
+
                 break
         
         # adding drag once the player stops moving
@@ -1201,6 +1258,24 @@ class Player (Entity):
         # updating the animation controller
         self.playerAnimation.Update(events, dt)
 
+    # rendering all the lighting
+    def RenderLighting(self, lightMap: pygame.Surface) -> None:
+        super().RenderLighting(lightMap, (0, 32))
+
+        # rendering the projectile lights
+        for projectile in self.projectiles:
+            projectile.RenderLighting(lightMap)
+
+        # muzzel flash
+        weapon = self.weaponInventory[self.weaponSlot]
+        lastFired = weapon.lastFired
+        if weapon.reloading: lastFired = weapon.lastFired + abs(weapon.fireRate) - weapon.reloadSpeed
+        if weapon.fired and time.time() - lastFired < 0.05:  # min(abs(self.weapon.fireRate)-0.005, 0.05):
+            if self.playerAnimation.state == PlayerStates.walkingLeft:
+                muzzleFlash.Render(lightMap, [round(self.position[0]), round(self.position[1] + self.spriteSize[1]//2)])
+            else:
+                muzzleFlash.Render(lightMap, [round(self.position[0] + self.spriteSize[0]), round(self.position[1] + self.spriteSize[1]//2)])
+
     # rendering the player
     def Render(self, screen: pygame.Surface, lightMap: pygame.Surface) -> None:
         # updating the sprite
@@ -1208,10 +1283,10 @@ class Player (Entity):
 
         # rendering the projectiles
         for projectile in self.projectiles:
-            projectile.Render(screen, lightMap)
+            projectile.Render(screen)
         
         # rendering the stuff in the parent class
-        super().Render(screen, lightMap, (0, 32))
+        super().Render(screen)
 
         # rendering the weapon
         weapon = self.weaponInventory[self.weaponSlot]
@@ -1226,15 +1301,10 @@ class Player (Entity):
         elif int(self.playerAnimation.frame % 2) == 1: xOffset = -4
         renderPos = [self.position[0] - self.spriteSize[0]//2 - cameraPos[0] + zoomedScreenSize[0]//2 - xOffset, self.position[1] - self.spriteSize[1]//2 - cameraPos[1] + zoomedScreenSize[1]//2 + yOffset]
         screen.blit(weaponSprites[weaponIndex], renderPos)
-
+        
         # rendering muzzel flash
         lastFired = weapon.lastFired
         if weapon.reloading: lastFired = weapon.lastFired + abs(weapon.fireRate) - weapon.reloadSpeed
-        if weapon.fired and time.time() - lastFired < 0.05:  # min(abs(self.weapon.fireRate)-0.005, 0.05):
-            if self.playerAnimation.state == PlayerStates.walkingLeft:
-                muzzleFlash.Render(lightMap, [round(self.position[0]), round(self.position[1] + self.spriteSize[1]//2)])
-            else:
-                muzzleFlash.Render(lightMap, [round(self.position[0] + self.spriteSize[0]), round(self.position[1] + self.spriteSize[1]//2)])
 
         # rendering the weapon cooldown
         cooldown = min((time.time() - weapon.lastFired) / abs(weapon.fireRate), 1)
@@ -1305,6 +1375,10 @@ class Weapon:
             else:
                 self.capacityLeft += player.amoInventory[self.amoType]
                 player.amoInventory[self.amoType] = 0
+            
+            amoText.text = f"{player.weaponInventory[player.weaponSlot].capacityLeft} - {player.amoInventory[player.weaponInventory[player.weaponSlot].amoType]}"
+            amoText.Update()
+
 
         # making sure there is amo left
         if not self.capacityLeft: return False
@@ -1328,6 +1402,9 @@ class Weapon:
 
     # force fires the weapon
     def ForceFire(self, direction: list, entity: Entity) -> list:  # mainly used for mobs so that it doesn't mess with the player (it won't cause a reload and ignors all amo counts)
+        # playing a shooting sound
+        mobShootingSound.play()
+        
         projectiles = []
 
         # firing the weapon
@@ -1350,12 +1427,18 @@ class Weapon:
 
     # updates the weapon
     def Fire(self, player: object) -> list:
+        # playing a shooting sound
+        playerShootingSound.play()
+
         # updating the time at which it was last fired
         self.lastFired = time.time()
         projectiles = []
 
         self.capacityLeft -= 1
         
+        amoText.text = f"{self.capacityLeft} - {player.amoInventory[player.weaponInventory[player.weaponSlot].amoType]}"
+        amoText.Update()
+
         for i in range(self.burst):
             self.fired = True
             # creating a projectile
@@ -1386,15 +1469,88 @@ class Weapon:
 #=============================================================================
 
 
+# does box-box collision on two boxes (not hitboxes)
+def BoxCollision(box1: list, box2: list) -> bool:
+    return (
+            # checking box-box collision
+        ((box1[0] <= box2[0] + box2[2]) and
+        (box1[0] + box1[2] >= box2[0]) and
+        (box1[1] <= box2[1] + box2[3]) and
+        (box1[1] + box1[3] >= box2[1]))
+    )
+
+
+# clips a set of boxes and combines them together
+def GetClippedArea() -> None:
+    global litAreas
+
+    # combining overlapping boxes
+    safeBoxes = litAreas[::]
+    litAreas = []
+    while len(safeBoxes) > 0:  # looping through all the boxes
+        # getting the current box and removing it
+        newBox = safeBoxes[0]
+        del safeBoxes[0]
+
+        # looping through all the boxes and combining
+        newSafeBoxes = []
+        for box in safeBoxes:
+            if BoxCollision(newBox, box):
+                # combining the boxes together
+                minX = min(newBox[0], box[0])
+                minY = min(newBox[1], box[1])
+                maxX = max(newBox[0]+newBox[2], box[0]+box[2])
+                maxY = max(newBox[1]+newBox[3], box[1]+box[3])
+
+                newBox = [minX, minY, maxX-minX, maxY-minY]
+            else:
+                newSafeBoxes.append(box)
+        safeBoxes = newSafeBoxes
+
+        litAreas.append(newBox)
+
+    # clipping all the boxes to the screen
+    litAreasClipped = []
+    for area in litAreas:
+        newXY = [max(area[0], 0), max(area[1], 0),]
+        newSize = [area[2] + (area[0]-newXY[0]), area[3] + (area[1]-newXY[1])]
+        newBox = [
+            newXY[0],
+            newXY[1],
+            newSize[0] - max((newXY[0] + newSize[0]) - zoomedScreenSize[0], 0),
+            newSize[1] - max((newXY[1] + newSize[1]) - zoomedScreenSize[1], 0)
+        ]
+        litAreasClipped.append(newBox)
+    litAreas = litAreasClipped
+
+
 # renders the ground
 def RenderGround(zoomDisplay: pygame.Surface) -> None:
+    # finding the constraints for the tiles
     topLeft = [cameraPos[0] - zoomedScreenSize[0]//2, cameraPos[1] - zoomedScreenSize[1]//2]
-    topLeftStart = [-(topLeft[0] % tileMap.tileSize), -(topLeft[1] % tileMap.tileSize)]
-    dstAcross = [math.ceil(zoomedScreenSize[0]/tileMap.tileSize), math.ceil(zoomedScreenSize[1]/tileMap.tileSize)]
-    bx, by = topLeft[0]//tileMap.tileSize, topLeft[1]//tileMap.tileSize
-    for x in range(dstAcross[0]+1):
-        for y in range(dstAcross[1]+1):
-            zoomDisplay.blit(groundTiles[round((x+y+bx+by)%4)], [round(topLeftStart[0]+x*64), round(topLeftStart[1]+y*64)])
+    topLeftStart = [-round(topLeft[0] % tileMap.tileSize), -round(topLeft[1] % tileMap.tileSize)]
+    dstAcross = [math.ceil(zoomedScreenSize[0]/tileMap.tileSize)+1, math.ceil(zoomedScreenSize[1]/tileMap.tileSize)+1]
+    bxy = topLeft[0]//tileMap.tileSize + topLeft[1]//tileMap.tileSize
+
+    # rendering each tile
+    for x in range(dstAcross[0]):
+        for y in range(dstAcross[1]):
+            #groundSprites.add()
+            zoomDisplay.blit(groundTiles[round((x+y+bxy)%4)], [topLeftStart[0]+x*64, topLeftStart[1]+y*64])
+
+# renders the ground within a specificed area
+def RenderGroundWindow(zoomDisplay: pygame.Surface, pos: tuple, size: tuple) -> None:
+    # finding the constraints for the tiles
+    topLeft = [cameraPos[0] - zoomedScreenSize[0]//2 + pos[0], cameraPos[1] - zoomedScreenSize[1]//2 + pos[1]]
+    topLeftStart = [-round(topLeft[0] % tileMap.tileSize) + pos[0], -round(topLeft[1] % tileMap.tileSize) + pos[1]]
+    dstAcross = [math.ceil(size[0]/tileMap.tileSize)+1, math.ceil(size[1]/tileMap.tileSize)+1]
+    bxy = topLeft[0]//tileMap.tileSize + topLeft[1]//tileMap.tileSize
+
+    # rendering each tile
+    for x in range(dstAcross[0]):
+        for y in range(dstAcross[1]):
+            #groundSprites.add()
+            zoomDisplay.blit(groundTiles[round((x+y+bxy)%4)], [topLeftStart[0]+x*64, topLeftStart[1]+y*64])
 
 
 # drops loot
@@ -1518,7 +1674,7 @@ settings = {
 # creating the screen
 screenSize = (1200, 750)
 oldScreenSize = (1200, 750)
-screen = pygame.display.set_mode(screenSize, flags=pygame.RESIZABLE)  #  | pygame.HWSURFACE
+screen = pygame.display.set_mode(screenSize, flags=pygame.RESIZABLE | pygame.DOUBLEBUF)  #  | pygame.HWSURFACE
 
 zoom = 1  # the zoom amount
 zoomedScreenSize = screenSize
@@ -1528,6 +1684,10 @@ zoomDisplay = zoomDisplay.convert()
 # creating the light map
 lightMap = pygame.Surface(screenSize)
 lightMap = lightMap.convert()
+
+# loading sounds
+playerShootingSound = Sounds.Sound("shooting.wav", volume=0.5, channel=SoundChannels.playerShooting.value)
+mobShootingSound = Sounds.Sound("shooting.wav", volume=0.5, channel=SoundChannels.mobsShooting.value)
 
 # creating some lights
 light = RadialLight(240, (225, 225, 225), 1)
@@ -1560,7 +1720,7 @@ tileHitBoxes = [
     [HitBox((52, 0), (12, 64))],  # 13
     [HitBox((52, 0), (12, 64))],  # 14
     [HitBox((8, 20), (48, 44))],  # 16 top of oil barrel
-    [HitBox((8, 28), (44, 12))],  # 18 amo crate
+    [HitBox((8, 32), (44, 28))],  # 18 amo crate
     [HitBox((0, 0), (64, 24))],  # 19
     [HitBox((0, 0), (64, 24))],  # 20
     [HitBox((20, 40), (24, 24))],  # 21  tall lamp
@@ -1569,14 +1729,14 @@ tileHitBoxes = [
     [HitBox((0, 0), (64, 64))],  # 26 top of storage container
     [HitBox((0, 32), (64, 32))],  # 27
     [HitBox((0, 32), (64, 32))],  # 28
-    [HitBox((8, 28), (44, 12))],  # 29 amo crate w/ block under
+    [HitBox((8, 32), (44, 28))],  # 29 amo crate w/ block under
     [HitBox((8, 20), (48, 44))],  # 32 top of empty oil barrel
     [HitBox((0, 0), (64, 64))],  # 33 mid section of storage container
     [HitBox((0, 0), (64, 64))],  # 34 mid section of storage container
     [HitBox((0, 0), (64, 64))],  # 36 top of house
     [HitBox((0, 0), (64, 64))],  # 37 top of house
     [HitBox((0, 0), (64, 64))],  # 38 top of house
-    [HitBox((8, 28), (44, 12))],  # 39 opened amo crate
+    [HitBox((8, 32), (44, 28))],  # 39 opened amo crate
     [HitBox((0, 0), (64, 64))],  # 41 top of storage container door
     [HitBox((0, 0), (64, 64))],  # 42 top of storage container door
     [HitBox((0, 0), (64, 64))],  # 44 top mid of house
@@ -1765,13 +1925,19 @@ amoCrateDrops = [
 ]
 
 # UI elements
-dashText = UI.TextRenderer(15, "pixel2.ttf", "DASH", (60, 20), (225, 0, 0), centered=True)  #UI.DrawText(screen, 15, "pixel2.ttf", f"DASH", (60, 20), (225, 0, 0), centered=True)
+dashText       = UI.TextRenderer(15, "pixel2.ttf", "DASH", (60, 20) , (225, 0, 0), centered=True)  #UI.DrawText(screen, 15, "pixel2.ttf", f"DASH", (60, 20), (225, 0, 0), centered=True)
+
+weaponNameText = UI.TextRenderer(30, "pixel2.ttf", player.weaponInventory[player.weaponSlot].name, (10, 40) , (255, 0, 0))
+amoText        = UI.TextRenderer(30, "pixel2.ttf", f"{player.weaponInventory[player.weaponSlot].capacityLeft} - {player.amoInventory[player.weaponInventory[player.weaponSlot].amoType]}", (10, 70) , (255, 0, 0))
+healthText     = UI.TextRenderer(30, "pixel2.ttf", f"{player.health}hp", (10, 100), (255, 0, 0))
 
 # loading the first level
 tileMap=None
 solidObjects=None
 lights=None
 LoadLevel("ShooterL1")  # loads all the data from the save files for the level
+
+litAreas = []
 
 # creating an event manager
 events = Events.Manager()
@@ -1782,7 +1948,6 @@ fps = 0
 desiredTime = 0  # 0 is unlimited, 1 / fps limits it to the fps desired
 lastCheckedFps = time.time()
 
-
 setup = 0
 updating = 0
 gettingRenders = 0
@@ -1792,11 +1957,9 @@ renderingUI = 0
 frame = 0
 
 hitBoxesToRender = []
-#"""
 lowest = 0
 heighest = 0
 lastReset = time.time()
-#"""
 
 # =============================================================================
 #                               Main Game Loop
@@ -1814,6 +1977,7 @@ while True:
     # getting the size of the screen (incase it got scaled or something)
     oldScreenSize = screenSize
     screenSize = screen.get_size()
+    litAreas = []
 
     # updating the events
     events.GetEvents()
@@ -1834,14 +1998,12 @@ while True:
         lastCheckedFps = time.time()
         fps = round(1 / dt)
 
-    #"""
     if time.time() - lastReset > 1:
         lowest = fps
         heighest = fps
         lastReset = time.time()
     lowest = min(lowest, fps)
     heighest = max(heighest, fps)
-    #"""
 
     t2 = time.time()
     
@@ -1866,39 +2028,41 @@ while True:
     # updating the camera position
     cameraPos = [Mix(cameraPos[0], player.position[0], dt * 5), Mix(cameraPos[1], player.position[1], dt * 5)]
 
-    t3 = time.time()
+    t3 = time.time()  # t3, t1-5, t4
 
     # drawing the base layer ground
-    lightMap.fill((0, 0, 0))  # (10, 45, 20) bad night vision color
+    pygame.draw.rect(lightMap, (0, 0, 0), [0, 0, zoomedScreenSize[0], zoomedScreenSize[1]])
+    pygame.draw.rect(zoomDisplay, (0, 0, 0), [0, 0, zoomedScreenSize[0], zoomedScreenSize[1]])
 
-    zoomDisplay.fill((0, 0, 0))  # the base layer
-    RenderGround(zoomDisplay)  # rendering the ground
-    
+    r1 = time.time()
+
     # rendering all the lights
     for light in lights:
         light.Render(lightMap)
+    
+    r2 = time.time()
 
     # the depth map to layer tiles and objects correctly (let's you walk behind objects and entities or infront)
     depthMap = []
-
-    # drawing the rest of the ground
-    depthMap += tileMap.RenderDepth(zoomDisplay, cameraPos, zoomedScreenSize, tileCenters)
     
     # rendering the solid objects
     for obj in solidObjects:
-        #obj.Render(screen)
         depth = obj.pos[1]
         depthMap.append([obj, depth, zoomDisplay])
     
+    r3 = time.time()
+
     # rendering the player
-    #player.Render(screen, lightMap)
+    player.RenderLighting(lightMap)
     depth = player.position[1]
     depthMap.append([player, depth, zoomDisplay, lightMap])
+
+    r4 = time.time()
 
     # rendering the mobs
     aliveEnemies = []
     for enemy in mobs:
-        #enemy.Render(screen, lightMap)
+        enemy.RenderLighting(lightMap)
         depth = enemy.position[1]
         depthMap.append([enemy, depth, zoomDisplay, lightMap])
         if enemy.health > 0:
@@ -1915,6 +2079,21 @@ while True:
                 player.projectiles.append(spark)
     mobs = aliveEnemies
 
+    r5 = time.time()
+
+    GetClippedArea()  # clipping the lit areas
+    #RenderGround(zoomDisplay)  # rendering the ground
+    for area in litAreas:
+        RenderGroundWindow(zoomDisplay, [area[0], area[1]], [area[2], area[3]])
+
+    r6 = time.time()
+
+    # drawing the rest of the ground
+    #depthMap += tileMap.RenderDepth(zoomDisplay, cameraPos, zoomedScreenSize, tileCenters)
+    for area in litAreas:
+        worldCoords = [area[0] - zoomedScreenSize[0]//2 + cameraPos[0] + area[2]//2, area[1] - zoomedScreenSize[1]//2 + cameraPos[1] + area[3]//2]
+        depthMap += tileMap.RenderDepth(zoomDisplay, worldCoords, [area[2], area[3]], tileCenters, screenOffset=[area[0], area[1]])
+    
     t4 = time.time()
 
     # sorting and rendering the objects
@@ -1934,6 +2113,9 @@ while True:
         for box in hitBoxesToRender:
             pygame.draw.rect(zoomDisplay, (255, 255, 255), [box[0]-cameraPos[0]+zoomedScreenSize[0]//2, box[1]-cameraPos[1]+zoomedScreenSize[1]//2, box[2], box[3]], width=2)
 
+        for box in litAreas:
+            pygame.draw.rect(zoomDisplay, (255, 0, 0), box, width=4)
+    
     screen.blit(pygame.transform.scale(zoomDisplay, screenSize), (0, 0))
 
     t6 = time.time()
@@ -1945,9 +2127,9 @@ while True:
     dashText.Render(screen)
 
     # displaying the name of the held weapon
-    UI.DrawText(screen, 30, "pixel2.ttf", player.weaponInventory[player.weaponSlot].name, (10, 40), (255, 0, 0))
-    UI.DrawText(screen, 30, "pixel2.ttf", f"{player.weaponInventory[player.weaponSlot].capacityLeft} - {player.amoInventory[player.weaponInventory[player.weaponSlot].amoType]}", (10, 70), (255, 0, 0))
-    UI.DrawText(screen, 30, "pixel2.ttf", f"{player.health}hp", (10, 100), (255, 0, 0))
+    weaponNameText.Render(screen)
+    amoText.Render(screen)
+    healthText.Render(screen)
 
     # rendering the player UI
     player.RenderUI(screen)
@@ -1957,6 +2139,7 @@ while True:
     UI.DrawText(screen, 15, "pixel2.ttf", f"FPS {lowest} - {heighest}", (screenSize[0] - 120, 40), (255, 0, 0))
     
     # updating the display
+    u1=time.time()
     pygame.display.update()
 
     if DEV_MODE:
@@ -1978,10 +2161,24 @@ while True:
         print(f"Rendering Surfs: {renderingSurfs/frame}sec | {1/(renderingSurfs/frame)}fps")
         print(f"Rendering UI   : {renderingUI/frame}sec | {1/(renderingUI/frame)}fps")
         print(f"Sorting        : {ps2-ps1}sec | {1/(ps2-ps1)}fps")
+
+        print(f"\nClearing       : {r1-t3 }sec | {1/(r1-t3  + 0.0000000001)}fps")
+        print( f"Lights         : {r2-r1 }sec | {1/(r2-r1  + 0.0000000001)}fps")
+        print(f"Objects        : {r3-r2 }sec | {1/(r3-r2  + 0.0000000001)}fps")
+        print(f"Player         : {r4-r3 }sec | {1/(r4-r3  + 0.0000000001)}fps")
+        print(f"Mobs           : {r5-r4 }sec | {1/(r5-r4  + 0.0000000001)}fps")
+        print(f"Ground         : {r6-r5 }sec | {1/(r6-r5  + 0.0000000001)}fps")
+        print(f"Tiles          : {t4 -r6}sec | {1/(t4 -r6 + 0.0000000001)}fps\n")
+        
+        print(f"Flip           : {t7 - u1}sec | {1/(t7 - u1)}fps\n")
+
         print(f"FPS            : {1/((setup+updating+gettingRenders+rendering+renderingSurfs+renderingUI)/frame)}")
         print("----------------------------------------------------")
 
     """
+    0.00869565217 sec
+    = 115
+
         Improved cashes (removed re-defining surfaces, and needless colorkey sets); a minimum of slight improvement across all fields with some have upwards of a 2.3x increase
     Setup          : 0.00017508892107453162 sec | 5711.38364359628 fps
     Updating       : 0.00024933454050010895 sec | 4010.6757691662983 fps
